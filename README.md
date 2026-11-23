@@ -177,7 +177,7 @@ cargo bench --bench grid -- data/test.csv
 python scripts/ties.py train
 python scripts/salsa.py dijkstra          # needs numpy; about 2 GB of text for all 15 sets
 cargo run --release --bin salsa -- dijkstra data/salsa/dijkstra/*.txt
-python scripts/roads.py sejong            # needs pyarrow
+python scripts/roads.py sejong            # needs numpy, pandas, pyarrow
 cargo run --release --bin roads -- data/roads/sejong.bin 1000
 ```
 
