@@ -364,13 +364,12 @@ pub fn render(q: &[u8], path: &[usize]) -> Vec<u8> {
     a
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
     use super::*;
 
     /// The AVX2 and portable steps agree word for word on random windows and both row strides.
     #[test]
-    #[cfg(target_arch = "x86_64")]
     fn kernels_agree() {
         if !is_x86_feature_detected!("avx2") {
             return;
