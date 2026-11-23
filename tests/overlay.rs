@@ -90,9 +90,9 @@ fn parallel_and_serial_cover_zeros_parallel_arcs_and_isolates() {
             let (mut x, mut y) = (Search::new(g.n), Search::new(g.n));
             for s in 0..g.n {
                 let want = dijkstra(&g, s);
-                for t in 0..g.n {
-                    assert_eq!(x.query(&g, &a, s, t), want.d[t]);
-                    assert_eq!(y.query(&g, &b, s, t), want.d[t]);
+                for (t, &d) in want.d.iter().enumerate() {
+                    assert_eq!(x.query(&g, &a, s, t), d);
+                    assert_eq!(y.query(&g, &b, s, t), d);
                 }
             }
         }
