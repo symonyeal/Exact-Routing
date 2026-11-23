@@ -55,7 +55,7 @@ answer is exact; on every query it equals plain Dijkstra's.
 
 **Two cut models, one partitioner.** Cells come from recursive inertial-flow bisection (Schild and
 Sommer 2015): project the nodes on four directions, take the first and last quarters as sources and
-sinks, and compute a minimum cut between them by augmenting paths, until cells have at most U nodes.
+sinks, and compute a minimum cut between them by Dinic's blocking flows, until cells have at most U nodes.
 
 - *Graph model:* the cut is a set of edges. Each cut edge makes both of its end nodes boundary nodes.
 - *Hypergraph model:* the cut is a set of nodes, shared by the cells on both sides. Equivalently, the
@@ -63,9 +63,9 @@ sinks, and compute a minimum cut between them by augmenting paths, until cells h
   connectivity metric, which counts boundary nodes directly. Where a source touches a sink no node cut
   exists and an edge cut is taken.
 
-Picking one end of every cut edge gives a node cut, so a minimum node cut is never larger than a minimum
-edge cut, and it creates one boundary node where an edge cut creates two. The prediction is about half
-the boundary nodes at equal U; the measurements below agree.
+Node cuts can avoid making both ends of each cut edge boundary nodes. The terminal sets are fixed and
+cannot be removed, so this is not a universal bound relating the two objectives: adjacent terminals
+require the edge-cut fallback. The boundary reductions below are measurements on these networks.
 
 **Results.** Two regions, uniform random node pairs (`results/roads.jsonl`). Plain Dijkstra stops when
 it settles t:
@@ -103,12 +103,62 @@ in settled nodes outweighs it. The best overlay answers a query 20–22 times fa
 Dijkstra in both regions (hypergraph model; graph model 14–17 times). Preprocessing takes 1.0–2.2
 times as long, because the node-split flow network has twice the nodes.
 
+## Reproducible metropolitan study
+
+`.github/workflows/metros.yml` covers eight Korean city regions and three international snapshots:
+
+| Source | Graphs | Pinned revision | Native arc cost |
+| --- | --- | --- | --- |
+| [Korea ETA](https://huggingface.co/datasets/CAMUS-LAB/data-road_network_eta) | Sejong, Seoul, Busan, Daegu, Incheon, Gwangju, Daejeon, Ulsan | `b111710756ee5727a0fbe3f6203c0cc2f93de2be` | weekday morning travel seconds, as above |
+| [InstructOSM](https://huggingface.co/datasets/HBNU-NLP/InstructOSM) | London, New York, Tokyo, large snapshots | `9b0548fc99a53ce509e4458748c2246ae8884fe4` | published `travel_time_min` multiplied by 60 |
+
+The international snapshots each contain about 50,000 nodes; they do not cover the entire metropolitan
+area. Explicit directed GraphML arcs and parallel arcs are retained; pickles are not loaded. Both
+converters validate inputs and save source and binary SHA-256 hashes alongside the binary.
+
+The implementations are reusable Dijkstra, bidirectional Dijkstra, six graph/hypergraph overlays
+(U = 256, 1,024, 4,096), and the Rust [`fast_paths` 1.0 contraction hierarchy](https://github.com/easbar/fast_paths).
+Dinic's iterative blocking flows replace repeated augmenting-path BFSs in the partitioner
+([original paper](https://www.cs.bgu.ac.il/~dinitz/D70.pdf)). Independent cells customize in scoped
+threads; partitioning remains serial. Each query worker owns its distances, heaps and touched lists.
+
+CH requires positive integer weights. Two separate comparisons therefore use native travel seconds
+and the changed metric `max(1, round(1000 * seconds))` on every arc. All methods within a comparison use
+the same metric. Rounded results do not establish the native-second optimum. The CH library internally
+reconstructs a path before the adapter returns its distance; this work is included. These are costs of
+the available distance-returning implementations, not isolated search kernels or equal path outputs.
+
+The default protocol freezes 1,000 pairs per graph, seed 20261123, three passes and two throughput
+workers. One quarter of pairs follows an 8-arc random walk, one quarter a 32-arc walk, and half are
+uniform pairs. Walks stop at dead ends. Identical endpoints and unreachable pairs remain and are
+counted. Pairs and references are saved. Every reference comes from a full tree whose certificate
+passes; this checks the sampled workload, not every possible pair in a city.
+
+Sixteen queries warm each implementation. Single-thread timing rotates the first method on each pair
+and pass. Each pair's mean over passes is computed first; p50/p95 are then taken across those means.
+The paired CH ratio is the median of per-pair mean-time ratios. Separate walk/uniform medians remain
+in the results. Serial and parallel overlay builds alternate order over three trials and report their
+medians. Throughput is a separate batch measurement including thread launch/join and answer checking,
+with workspace allocation excluded. CPU model, OS, compiler, flags and revision accompany each city.
+City jobs may use different processors; method comparisons are paired within a job.
+
+`scripts/metro.py` reconciles both metrics, all methods and thread counts, and every required city.
+Missing results, failed scorers, wrong answers and input-hash mismatches fail publication.
+
+The source cards checked on 23 November 2026 do not link a comparable exact-routing latency ranking.
+Hugging Face's [leaderboard API](https://huggingface.co/docs/hub/leaderboard-data-guide) ranks submitted
+model scores; SALSA evaluates reasoning accuracy and InstructOSM supplies instruction tasks. This study
+compares a published Rust routing implementation on matching inputs and hardware; it establishes no
+external speed record.
+
 ## Limits
 
 - One partitioning level and one bisection heuristic; a multilevel overlay or a dedicated hypergraph
-  partitioner (KaHyPar, Mt-KaHyPar) may change the margins. The baseline is one-directional Dijkstra;
-  bidirectional search and contraction hierarchies are not compared.
+  partitioner (KaHyPar, Mt-KaHyPar) may change the margins. The original two-region table uses only
+  one-directional Dijkstra; the expanded protocol adds bidirectional search and integer CH.
 - Timings are one paired run on a laptop (Intel Core i5-1335U); node, arc, settled and scanned counts
-  are deterministic. Two regions of sixteen were run; the nationwide graph was not.
+  are deterministic. The original table covers two regions; the nationwide graph was not run.
+- Customizable contraction hierarchies, hub labeling and multilevel CRP are not implemented. This
+  study measures ordinary CH and a two-level overlay and claims no new routing algorithm.
 - OpenStreetMap ways are themselves hyperedges over their nodes; that structure is not used here.
 - SALSA-CLRS reference parents for distributed MIS, DFS, spanning trees and eccentricity are not scored.

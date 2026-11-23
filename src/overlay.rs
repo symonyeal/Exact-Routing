@@ -52,12 +52,32 @@ impl Overlay {
     pub fn arcs(&self) -> usize {
         self.head.len()
     }
+
+    /// Bytes in the stored array elements, excluding Vec headers, spare capacity and query state.
+    pub fn bytes(&self) -> usize {
+        4 * (self.cell.len() + self.home.len() + self.head.len())
+            + size_of::<usize>() * self.off.len()
+            + 8 * self.w.len()
+    }
 }
 
 /// Partition the edges of g into cells of at most `u` nodes and build the overlay. `xy` are planar
 /// node coordinates for the inertial-flow projections.
 pub fn build(g: &Graph, xy: &[(f64, f64)], u: usize, model: Model) -> Overlay {
+    build_parallel(g, xy, u, model, 1)
+}
+
+/// Build the same overlay with at most `threads` independent customization workers. The partition
+/// is deterministic and serial; each worker owns its search workspace and a disjoint set of cells.
+pub fn build_parallel(
+    g: &Graph,
+    xy: &[(f64, f64)],
+    u: usize,
+    model: Model,
+    threads: usize,
+) -> Overlay {
     let n = g.n;
+    assert!(u >= 2 && xy.len() == n && threads > 0);
     // Undirected edges and, for each arc, its edge.
     let mut keys: Vec<(u32, u32, usize)> = (0..n)
         .flat_map(|x| (g.off[x]..g.off[x + 1]).map(move |a| (x as u32, a)))
@@ -108,20 +128,43 @@ pub fn build(g: &Graph, xy: &[(f64, f64)], u: usize, model: Model) -> Overlay {
             }
         }
     }
-    let mut over: Vec<(u32, u32, f64)> = Vec::new();
-    let mut search = Search::new(n);
-    for (c, b) in members.iter_mut().enumerate() {
+    for b in &mut members {
         b.sort_unstable();
         b.dedup();
-        for &x in b.iter() {
-            search.run(g, x as usize, None, |a| cell[a] == c as u32, None);
-            over.extend(
-                b.iter()
-                    .filter(|&&y| y != x && search.d[y as usize] < f64::INFINITY)
-                    .map(|&y| (x, y, search.d[y as usize])),
-            );
-        }
     }
+    let work = |lo: usize, cells: &[Vec<u32>]| {
+        let mut over = Vec::new();
+        let mut search = Search::new(n);
+        for (i, b) in cells.iter().enumerate() {
+            for &x in b {
+                search.run(g, x as usize, None, |a| cell[a] == (lo + i) as u32, None);
+                over.extend(
+                    b.iter()
+                        .filter(|&&y| y != x && search.d[y as usize] < f64::INFINITY)
+                        .map(|&y| (x, y, search.d[y as usize])),
+                );
+            }
+        }
+        over
+    };
+    let mut over = if threads == 1 || members.is_empty() {
+        work(0, &members)
+    } else {
+        let chunk = members.len().div_ceil(threads).max(1);
+        std::thread::scope(|scope| {
+            let jobs: Vec<_> = members
+                .chunks(chunk)
+                .enumerate()
+                .map(|(i, b)| {
+                    let work = &work;
+                    scope.spawn(move || work(i * chunk, b))
+                })
+                .collect();
+            jobs.into_iter()
+                .flat_map(|job| job.join().unwrap())
+                .collect()
+        })
+    };
     for x in 0..n {
         let r = g.off[x]..g.off[x + 1];
         let arcs = cell[r.clone()].iter().zip(&g.head[r.clone()]).zip(&g.w[r]);
@@ -199,7 +242,7 @@ fn bisect(
     (a, b)
 }
 
-/// Minimum cut between node sets s and t of the piece by augmenting paths (Edmonds and Karp) with
+/// Minimum cut between node sets s and t by Dinic's blocking flows (1970), with
 /// unit capacities on edges (graph model) or nodes (hypergraph model, nodes split into in and out
 /// copies; where a source and a sink are adjacent no node cut exists and an edge cut is taken).
 /// Paths are augmented by their bottleneck. Returns the cut size and each node's side.
@@ -247,36 +290,65 @@ fn cut(
     s.iter().for_each(|&v| arc(src, io(v).0, INF, 0));
     t.iter().for_each(|&v| arc(io(v).1, snk, INF, 0));
     let mut flow = 0;
-    let mut prev = vec![usize::MAX; snk + 1];
+    let mut level = vec![usize::MAX; snk + 1];
+    let mut cursor = vec![0; snk + 1];
+    let mut path = Vec::new();
     loop {
-        prev.fill(usize::MAX);
+        level.fill(usize::MAX);
+        level[src] = 0;
         let mut queue = std::collections::VecDeque::from([src]);
         while let Some(x) = queue.pop_front() {
             for &i in &adj[x] {
-                if cap[i] > 0 && prev[to[i]] == usize::MAX && to[i] != src {
-                    prev[to[i]] = i;
+                if cap[i] > 0 && level[to[i]] == usize::MAX {
+                    level[to[i]] = level[x] + 1;
                     queue.push_back(to[i]);
                 }
             }
         }
-        if prev[snk] == usize::MAX {
+        if level[snk] == usize::MAX {
             break;
         }
-        let path: Vec<usize> = std::iter::successors(Some(prev[snk]), |&i| {
-            Some(to[i ^ 1]).filter(|&y| y != src).map(|y| prev[y])
-        })
-        .collect();
-        let b = path.iter().map(|&i| cap[i]).min().unwrap();
-        if b == INF {
-            // A source touches a sink: no node separator exists, so cut edges here instead.
-            return cut(n, ends, s, t, Model::Graph);
+        cursor.fill(0);
+        // Iterative level-graph DFS avoids a call stack proportional to road-network diameter.
+        loop {
+            path.clear();
+            let mut x = src;
+            while x != snk {
+                while cursor[x] < adj[x].len() {
+                    let i = adj[x][cursor[x]];
+                    if cap[i] > 0 && level[to[i]] == level[x] + 1 {
+                        break;
+                    }
+                    cursor[x] += 1;
+                }
+                if cursor[x] == adj[x].len() {
+                    if let Some(i) = path.pop() {
+                        x = to[i ^ 1];
+                        cursor[x] += 1;
+                    } else {
+                        break;
+                    }
+                } else {
+                    let i = adj[x][cursor[x]];
+                    path.push(i);
+                    x = to[i];
+                }
+            }
+            if x != snk {
+                break;
+            }
+            let b = path.iter().map(|&i| cap[i]).min().unwrap();
+            if b == INF {
+                // Adjacent terminal sets cannot be separated by nonterminal nodes.
+                return cut(n, ends, s, t, Model::Graph);
+            }
+            path.iter()
+                .for_each(|&i| (cap[i], cap[i ^ 1]) = (cap[i] - b, cap[i ^ 1] + b));
+            flow += b as usize;
         }
-        path.iter()
-            .for_each(|&i| (cap[i], cap[i ^ 1]) = (cap[i] - b, cap[i ^ 1] + b));
-        flow += b as usize;
     }
-    // Source side: reached by the last search, whose `prev` marks the residual reach.
-    let reach = |x: usize| x == src || prev[x] != usize::MAX;
+    // The last BFS exhausts the source's residual component, hence identifies a minimum cut.
+    let reach = |x: usize| level[x] != usize::MAX;
     let side = (0..n)
         .map(|v| match (reach(io(v).0), reach(io(v).1)) {
             (true, true) => 0,
@@ -294,6 +366,7 @@ pub struct Search {
     pub d: Vec<f64>,
     done: Vec<bool>,
     touched: Vec<u32>,
+    heap: BinaryHeap<Reverse<(Key, u32)>>,
     pub settled: usize,
     pub scanned: usize,
 }
@@ -304,6 +377,7 @@ impl Search {
             d: vec![f64::INFINITY; n],
             done: vec![false; n],
             touched: Vec::new(),
+            heap: BinaryHeap::new(),
             settled: 0,
             scanned: 0,
         }
@@ -324,10 +398,11 @@ impl Search {
         }
         self.touched.clear();
         (self.settled, self.scanned) = (0, 0);
-        let mut heap = BinaryHeap::from([Reverse((Key(0.0), s as u32))]);
+        self.heap.clear();
+        self.heap.push(Reverse((Key(0.0), s as u32)));
         self.d[s] = 0.0;
         self.touched.push(s as u32);
-        while let Some(Reverse((Key(dx), x))) = heap.pop() {
+        while let Some(Reverse((Key(dx), x))) = self.heap.pop() {
             let x = x as usize;
             if std::mem::replace(&mut self.done[x], true) {
                 continue;
@@ -352,7 +427,7 @@ impl Search {
                         self.touched.push(y as u32);
                     }
                     self.d[y] = dx + w;
-                    heap.push(Reverse((Key(dx + w), y as u32)));
+                    self.heap.push(Reverse((Key(dx + w), y as u32)));
                 }
             }
         }
@@ -369,5 +444,84 @@ impl Search {
             |a| o.cell[a] != NONE && (o.cell[a] == cs || o.cell[a] == ct),
             Some(o),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Model, cut};
+
+    #[test]
+    fn blocking_flow_cuts_match_exhaustive_separators() {
+        for n in 2..=6 {
+            let edges: Vec<_> = (0..n)
+                .flat_map(|u| (u + 1..n).map(move |v| (u, v)))
+                .collect();
+            for seed in 0..128usize {
+                let bits = if n <= 4 {
+                    seed
+                } else {
+                    seed.wrapping_mul(0x9e3779b9)
+                };
+                let ends: Vec<_> = edges
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| bits & (1 << i) != 0)
+                    .map(|(_, e)| *e)
+                    .collect();
+                let terminals: Vec<_> = if n >= 4 {
+                    vec![(vec![0], vec![n - 1]), (vec![0, 1], vec![n - 2, n - 1])]
+                } else {
+                    vec![(vec![0], vec![n - 1])]
+                };
+                for (s, t) in terminals {
+                    let edge_cut = (0..1usize << n)
+                        .filter(|mask| {
+                            s.iter().all(|&v| mask & (1 << v) != 0)
+                                && t.iter().all(|&v| mask & (1 << v) == 0)
+                        })
+                        .map(|mask| {
+                            ends.iter()
+                                .filter(|&&(u, v)| (mask >> u) & 1 != (mask >> v) & 1)
+                                .count()
+                        })
+                        .min()
+                        .unwrap();
+                    assert_eq!(cut(n, &ends, &s, &t, Model::Graph).0, edge_cut);
+                    let node_cut = (0..1usize << n)
+                        .filter(|mask| s.iter().chain(&t).all(|&v| mask & (1 << v) == 0))
+                        .filter(|mask| {
+                            let mut seen = vec![false; n];
+                            let mut stack = s.clone();
+                            for &v in &s {
+                                seen[v] = true;
+                            }
+                            while let Some(u) = stack.pop() {
+                                for &(a, b) in &ends {
+                                    let v = if a == u {
+                                        b
+                                    } else if b == u {
+                                        a
+                                    } else {
+                                        continue;
+                                    };
+                                    if !seen[v] && mask & (1 << v) == 0 {
+                                        seen[v] = true;
+                                        stack.push(v);
+                                    }
+                                }
+                            }
+                            t.iter().all(|&v| !seen[v])
+                        })
+                        .map(|mask| mask.count_ones() as usize)
+                        .min();
+                    assert_eq!(
+                        cut(n, &ends, &s, &t, Model::Hypergraph).0,
+                        node_cut.unwrap_or(edge_cut),
+                        "n={n}, seed={seed}"
+                    );
+                }
+            }
+        }
     }
 }

@@ -1,0 +1,104 @@
+name: Metropolitan routing study
+
+on:
+  workflow_dispatch:
+    inputs:
+      queries:
+        description: Fixed query pairs per graph and metric
+        default: '1000'
+        required: true
+      repeats:
+        description: Paired latency passes and throughput trials
+        default: '3'
+        required: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: metros-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install numpy pandas pyarrow
+      - run: cargo fmt --check
+      - run: cargo clippy --release --locked --all-targets -- -D warnings
+      - run: cargo test --release --locked
+      - run: python -m unittest discover -s scripts -p 'test_*.py' -v
+
+  city:
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        city: [sejong, seoul, busan, daegu, incheon, gwangju, daejeon, ulsan, london-large, new_york-large, tokyo-large]
+    env:
+      CITY: ${{ matrix.city }}
+      QUERIES: ${{ inputs.queries }}
+      REPEATS: ${{ inputs.repeats }}
+      RUSTFLAGS: -C target-cpu=native
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install numpy pandas pyarrow
+      - run: cargo build --release --locked --bin metro
+      - name: Fetch one pinned metropolitan graph
+        run: |
+          if [[ "$CITY" == *-large ]]; then
+            python scripts/international.py "${CITY%-large}" large
+          else
+            python scripts/roads.py "$CITY"
+          fi
+      - name: Native and rounded metrics, exact checks and paired timing
+        run: |
+          python scripts/metro.py run "data/roads/$CITY.bin" "results/metro/$CITY.jsonl" --queries "$QUERIES" --threads 2 --repeats "$REPEATS"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metro-${{ matrix.city }}
+          path: results/metro/${{ matrix.city }}.jsonl
+          if-no-files-found: error
+          retention-days: 14
+
+  report:
+    needs: city
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: metro-*
+          path: results/metro
+          merge-multiple: true
+      - name: Reconcile every required city and method
+        run: |
+          python scripts/metro.py report results/metro --output results/metro.md
+          cat results/metro.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metro-summary
+          path: results/metro.md
+          retention-days: 14

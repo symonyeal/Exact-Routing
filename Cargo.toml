@@ -7,6 +7,10 @@ description = "Exact shortest paths with optimality certificates: word-parallel 
 license = "MIT"
 repository = "https://github.com/symonyeal/Exact-Routing"
 
+[dependencies]
+fast_paths = "1.0"
+serde_json = "1"
+
 [dev-dependencies]
 pathfinding = "4"
 

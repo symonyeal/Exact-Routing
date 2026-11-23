@@ -10,8 +10,9 @@
 //! uniform node pairs, seeded; every method answers each query in turn, so times are paired.
 //! Exits 1 if a tree is not certified or a query is wrong.
 
-use route::graph::{Graph, check, dijkstra};
+use route::graph::{check, dijkstra};
 use route::overlay::{Model, Search, build};
+use route::road::Road;
 use std::time::Instant;
 use std::{env, fs, process::ExitCode};
 
@@ -25,28 +26,8 @@ fn main() -> ExitCode {
         vec![256, 1024, 4096]
     };
     let b = fs::read(file).unwrap_or_else(|e| panic!("{file}: {e}"));
-    let word = |i: usize| u64::from_le_bytes(b[8 * i..8 * i + 8].try_into().unwrap());
-    let (n, m) = (word(0) as usize, word(1) as usize);
-    let f64s = |at: usize, k: usize| -> Vec<f64> {
-        (0..k)
-            .map(|i| f64::from_le_bytes(b[at + 8 * i..at + 8 * i + 8].try_into().unwrap()))
-            .collect()
-    };
-    let u32s = |at: usize, k: usize| -> Vec<u32> {
-        (0..k)
-            .map(|i| u32::from_le_bytes(b[at + 4 * i..at + 4 * i + 4].try_into().unwrap()))
-            .collect()
-    };
-    let (lat, lon) = (f64s(16, n), f64s(16 + 8 * n, n));
-    let at = 16 + 16 * n;
-    let (tail, head, w) = (u32s(at, m), u32s(at + 4 * m, m), f64s(at + 8 * m, m));
-    let g = Graph::new(n, (0..m).map(|i| (tail[i], head[i], w[i])));
-    let scale = (lat.iter().sum::<f64>() / n as f64).to_radians().cos();
-    let xy: Vec<(f64, f64)> = lon
-        .iter()
-        .zip(&lat)
-        .map(|(&x, &y)| (x * scale, y))
-        .collect();
+    let Road { g, xy } = Road::decode(&b).expect("invalid road binary");
+    let (n, m) = (g.n, (b.len() - 16 - 16 * g.n) / 16);
     println!(r#"{{"graph":"{file}","nodes":{n},"arcs":{m}}}"#);
 
     let mut z = 2026u64;

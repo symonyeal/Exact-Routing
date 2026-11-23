@@ -4,6 +4,9 @@
 //! `graph`: sparse directed graphs: breadth-first search, Dijkstra and tree certificates.
 //! `overlay`: exact point-to-point queries over cells from a graph or hypergraph partition.
 
+pub mod ch;
 pub mod graph;
 pub mod grid;
 pub mod overlay;
+pub mod query;
+pub mod road;

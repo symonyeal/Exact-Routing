@@ -47,6 +47,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install numpy pandas pyarrow
+      - run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
       - run: cargo build --release
       - name: SALSA-CLRS test sets, every tree certified
         run: |

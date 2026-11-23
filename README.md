@@ -160,12 +160,16 @@ deterministic). [`docs/sparse.md`](docs/sparse.md) has the full table and the re
 | `benches/grid.rs` | timing, peak heap and generated-grid scaling against the rivals |
 | `src/graph.rs` | sparse graphs: direction-optimizing breadth-first search, Dijkstra, shortest-path-tree certificate |
 | `src/overlay.rs` | inertial-flow partitions under the graph and hypergraph cut models, two-level overlay, queries |
+| `src/query.rs`, `src/ch.rs` | reusable bidirectional Dijkstra and a validated adapter to Rust contraction hierarchies |
+| `src/road.rs`, `src/bin/metro.rs` | validated road inputs, certified query workloads, paired latency and parallel throughput |
 | `src/bin/salsa.rs` | scores SALSA-CLRS sets: node and graph accuracy, certified trees |
 | `src/bin/roads.rs` | road queries: plain Dijkstra against overlays of both models |
 | `tests/graph.rs`, `tests/overlay.rs` | searches against Bellman–Ford and relaxation oracles, certificate mutations; overlay distances against Dijkstra |
 | `scripts/fetch.py` | downloads the pinned Maze-Hard CSVs into `data/` and checks their hashes |
 | `scripts/ties.py` | scores the 336 tie-breaking rules on the training split |
 | `scripts/salsa.py`, `scripts/roads.py` | convert SALSA-CLRS test sets and Korea road regions into `data/` |
+| `scripts/international.py`, `scripts/metro.py` | pinned international GraphML conversion, benchmark validation and metropolitan reports |
+| `.github/workflows/metros.yml` | eleven-city study: eight Korean regions plus London, New York and Tokyo snapshots |
 | `docs/` | `grid.md` (maze proofs and costs), `sparse.md` (SALSA-CLRS, overlays, cut models) |
 | `results/` | `eval.jsonl` (checked in CI), `bench.md`, `ties.txt`, `salsa.jsonl`, `roads.jsonl` |
 
@@ -179,6 +183,14 @@ python scripts/salsa.py dijkstra          # needs numpy; about 2 GB of text for 
 cargo run --release --bin salsa -- dijkstra data/salsa/dijkstra/*.txt
 python scripts/roads.py sejong            # needs numpy, pandas, pyarrow
 cargo run --release --bin roads -- data/roads/sejong.bin 1000
+python scripts/international.py london large  # needs numpy; published travel times become seconds
+cargo build --release --bin metro
+python scripts/metro.py run data/roads/london-large.bin results/metro/london-large.jsonl
 ```
+
+The metropolitan benchmark compares native seconds separately from rounded integer milliseconds,
+which the CH library requires. Every sampled answer uses a certified reference tree. Single-thread
+latency, preprocessing and parallel throughput have separate measurements; see
+[`docs/sparse.md`](docs/sparse.md#reproducible-metropolitan-study) for the fixed workload and scope.
 
 Rust 1.87 or later. MIT licence.
