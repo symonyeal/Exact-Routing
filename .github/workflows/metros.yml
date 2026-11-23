@@ -11,24 +11,39 @@ on:
         description: Paired latency passes and throughput trials
         default: '3'
         required: true
+      city:
+        description: One city to resume, or all
+        default: all
+        required: true
+      benchmark_ref:
+        description: Benchmark code revision (blank uses this workflow revision)
+        required: false
+      previous_run:
+        description: Prior run whose completed city artifacts should be reused
+        required: false
 
 permissions:
   contents: read
+  actions: read
 
 defaults:
   run:
     shell: bash
 
 concurrency:
-  group: metros-${{ github.ref }}
+  group: metros-${{ github.ref }}-${{ inputs.city || 'all' }}
   cancel-in-progress: true
 
 jobs:
   checks:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.benchmark_ref || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -40,16 +55,21 @@ jobs:
       - run: cargo clippy --release --locked --all-targets -- -D warnings
       - run: cargo test --release --locked
       - run: python -m unittest discover -s scripts -p 'test_*.py' -v
+      - name: Select the declared city population
+        id: select
+        env:
+          SELECTED_CITY: ${{ inputs.city || 'all' }}
+        run: |
+          python -c 'import json,os,sys; sys.path.insert(0,"scripts"); from metro import CITIES; city=os.environ["SELECTED_CITY"]; assert city=="all" or city in CITIES; print("matrix="+json.dumps({"city":sorted(CITIES) if city=="all" else [city]}))' >> "$GITHUB_OUTPUT"
 
   city:
     needs: checks
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       max-parallel: 3
-      matrix:
-        city: [sejong, seoul, busan, daegu, incheon, gwangju, daejeon, ulsan, london-large, new_york-large, tokyo-large]
+      matrix: ${{ fromJSON(needs.checks.outputs.matrix) }}
     env:
       CITY: ${{ matrix.city }}
       QUERIES: ${{ inputs.queries }}
@@ -57,6 +77,8 @@ jobs:
       RUSTFLAGS: -C target-cpu=native
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.benchmark_ref || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v5
         with:
@@ -85,9 +107,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.benchmark_ref || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.previous_run != '' }}
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.previous_run }}
+          pattern: metro-*
+          path: results/metro
+          merge-multiple: true
       - uses: actions/download-artifact@v4
         with:
           pattern: metro-*
