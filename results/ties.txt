@@ -1,0 +1,16 @@
+336 rules, 1000 train mazes
+ 1000  bfsS-parent-DLRU
+ 1000  bfsG-descend-DLRU
+  956  bfsS-descend-DLRU
+  956  bfsG-parent-DLRU
+  931  bfsS-parent-DRLU
+  931  bfsG-descend-DRLU
+  920  bfsS-descend-DRLU
+  920  bfsG-parent-DRLU
+  191  astarS-f,h,fifo-DLRU
+  191  astarS-f,fifo-DLRU
+  191  astarS-f,g,fifo-DLRU
+  191  astarS-f,h,fifo-DRLU
+  191  astarS-f,fifo-DRLU
+  191  astarS-f,g,fifo-DRLU
+  175  astarG-f,h,fifo-DLRU

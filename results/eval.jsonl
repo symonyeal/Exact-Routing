@@ -1,0 +1,2 @@
+{"file":"train.csv","rows":1000,"certified":1000,"exact":1000,"rated":1000}
+{"file":"test.csv","rows":1000,"certified":1000,"exact":1000,"rated":1000}

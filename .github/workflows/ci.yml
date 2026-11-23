@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # x86-64 runs the AVX2 step; arm64 macOS runs the portable step.
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --release --all-targets -- -D warnings
+      - run: cargo test --release
+      - run: python3 scripts/fetch.py
+      - name: Score both splits against results/eval.jsonl
+        run: |
+          cargo run --release --bin maze -- data/train.csv data/test.csv > eval.jsonl
+          diff eval.jsonl results/eval.jsonl
+
+  bench:
+    name: Benchmark (Linux)
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - run: python3 scripts/fetch.py
+      - run: cargo bench --bench grid -- data/test.csv | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Peak resident memory of scoring both splits
+        run: |
+          cargo build --release --bin maze
+          /usr/bin/time -v target/release/maze data/train.csv data/test.csv 2>&1 | grep "Maximum resident" | tee -a "$GITHUB_STEP_SUMMARY"
