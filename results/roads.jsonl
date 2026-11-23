@@ -1,0 +1,16 @@
+{"graph":"data/roads/sejong.bin","nodes":85647,"arcs":164671}
+{"method":"dijkstra","queries":1000,"reached":937,"query_us":3147.7,"settled":41650,"scanned":80158,"certified_trees":"3/3"}
+{"method":"overlay","model":"Graph","u":256,"cells":515,"boundary":2690,"overlay_arcs":13037,"build_s":1.97,"query_us":373.8,"settled":1691,"scanned":10966,"wrong":0}
+{"method":"overlay","model":"Graph","u":1024,"cells":130,"boundary":992,"overlay_arcs":6394,"build_s":1.95,"query_us":223.0,"settled":1532,"scanned":6840,"wrong":0}
+{"method":"overlay","model":"Graph","u":4096,"cells":33,"boundary":375,"overlay_arcs":3822,"build_s":1.27,"query_us":371.7,"settled":3973,"scanned":9964,"wrong":0}
+{"method":"overlay","model":"Hypergraph","u":256,"cells":520,"boundary":1304,"overlay_arcs":9856,"build_s":2.31,"query_us":187.0,"settled":948,"scanned":7860,"wrong":0}
+{"method":"overlay","model":"Hypergraph","u":1024,"cells":125,"boundary":458,"overlay_arcs":4924,"build_s":1.95,"query_us":153.5,"settled":1297,"scanned":5566,"wrong":0}
+{"method":"overlay","model":"Hypergraph","u":4096,"cells":32,"boundary":177,"overlay_arcs":2732,"build_s":2.29,"query_us":351.5,"settled":4114,"scanned":9635,"wrong":0}
+{"graph":"data/roads/seoul.bin","nodes":328610,"arcs":676989}
+{"method":"dijkstra","queries":500,"reached":486,"query_us":16282.1,"settled":162191,"scanned":334208,"certified_trees":"3/3"}
+{"method":"overlay","model":"Graph","u":256,"cells":1968,"boundary":19099,"overlay_arcs":183331,"build_s":13.85,"query_us":3134.4,"settled":10093,"scanned":119102,"wrong":0}
+{"method":"overlay","model":"Graph","u":1024,"cells":490,"boundary":7349,"overlay_arcs":101665,"build_s":13.44,"query_us":1411.4,"settled":4859,"scanned":64096,"wrong":0}
+{"method":"overlay","model":"Graph","u":4096,"cells":121,"boundary":2823,"overlay_arcs":51585,"build_s":15.89,"query_us":983.9,"settled":5654,"scanned":39661,"wrong":0}
+{"method":"overlay","model":"Hypergraph","u":256,"cells":2028,"boundary":9081,"overlay_arcs":139238,"build_s":29.88,"query_us":1500.3,"settled":4929,"scanned":85394,"wrong":0}
+{"method":"overlay","model":"Hypergraph","u":1024,"cells":499,"boundary":3471,"overlay_arcs":80416,"build_s":29.30,"query_us":805.0,"settled":2825,"scanned":49060,"wrong":0}
+{"method":"overlay","model":"Hypergraph","u":4096,"cells":124,"boundary":1327,"overlay_arcs":43119,"build_s":25.55,"query_us":733.3,"settled":4760,"scanned":33620,"wrong":0}

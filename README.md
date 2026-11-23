@@ -1,10 +1,16 @@
 # Exact Routing
 
-Shortest paths solved exactly, each with a proof of optimality. On the Sapient Maze-Hard benchmark
-the solver reproduces all 1,000 held-out reference answers, in about 3 µs and at most 2.3 KB of heap
-per maze on a laptop.
+Shortest paths solved exactly, each with a proof of optimality, on three public test beds:
 
-## Background
+- **Maze-Hard** (30×30 grids): all 1,000 held-out reference answers reproduced, in about 3 µs and at
+  most 2.3 KB of heap per maze on a laptop.
+- **SALSA-CLRS** (sparse random graphs up to 1,600 nodes): all 30,000 breadth-first and Dijkstra test
+  trees equal the reference and are certified; the best published neural models solve at most 0.4% of
+  the largest graphs.
+- **Korea road network** (OpenStreetMap with observed travel times): exact point-to-point queries with a
+  two-level overlay, comparing graph and hypergraph partitions of the same network.
+
+## Maze-Hard
 
 Maze-Hard ([sapientinc/maze-30x30-hard-1k](https://huggingface.co/datasets/sapientinc/maze-30x30-hard-1k))
 is a standard test for neural reasoning models: 1,000 training and 1,000 test mazes of 30×30 cells, each
@@ -13,7 +19,7 @@ the maze and write the answer grid, and are usually scored on exact match with t
 maze has several shortest paths, so exact match also requires the dataset's choice among them, which
 the dataset does not document.
 
-## The reference answer is a rule
+### The reference answer is a rule
 
 On the training split, 336 candidate tie-breaking rules were scored (`scripts/ties.py`,
 `results/ties.txt`). One rule, in two equivalent forms, reproduces all 1,000 training answers: **the
@@ -48,7 +54,7 @@ was not checked for its metric. The learned models must discover search from exa
 runs a search directly, so the table measures the benchmark's ceiling, not learning ability. It also
 shows that exact match on Maze-Hard is fully determined by one simple rule.
 
-## Speed and memory
+### Speed and memory
 
 End to end, from the question string to the answer grid, on the 1,000 test mazes. One run on an Intel
 Core i5-1335U laptop restricted to its two performance cores; medians of paired per-maze times
@@ -72,7 +78,7 @@ On generated n×n grids with the same wall density, one run had the wave ahead b
 times from n = 30 to n = 512 and behind at n = 1024 (5 mazes). Its work grows with path length times
 grid area, while a queue search grows with area alone.
 
-## How it works
+### How it works
 
 1. **Wave.** Cells are bits, two 30-cell rows per 64-bit word. Each breadth-first layer from G is
    computed for a whole block of rows at once, four words per AVX2 instruction (Lee 1961).
@@ -90,15 +96,59 @@ The recent breakthroughs in single-source shortest paths concern real-valued wei
 grids already admit linear-time search, so the gains available here are constant factors in time
 and memory. [`docs/grid.md`](docs/grid.md) gives the formulation, proofs, costs and sources.
 
+## SALSA-CLRS
+
+[SALSA-CLRS](https://huggingface.co/datasets/SALSA-CLRS/SALSA-CLRS) (LoG 2023) tests whether neural
+algorithmic reasoners trained on graphs of at most 16 nodes generalize to larger sparse graphs:
+Erdős–Rényi, Watts–Strogatz and Delaunay families at 16 to 1,600 nodes, 1,000 test graphs per family
+and size. The answer is the parent of every node in the breadth-first or Dijkstra tree from a source.
+
+| Algorithm | Test graphs | Parents equal to reference | Trees certified | Best neural model at n = 1,600: graphs fully correct (ER / WS / Delaunay) |
+| --- | ---: | ---: | ---: | --- |
+| Breadth-first search | 15,000 | 100% | 15,000 | 0.4 / 0.0 / 0.0% |
+| Dijkstra | 15,000 | 100% | 15,000 | 0.0 / 0.0 / 0.0% |
+
+Breadth-first parents follow the CLRS rule, the smallest-index node one layer closer to the source,
+which a direction-optimizing search keeps in both directions. Mean search time at n = 1,600 is
+39–156 µs for breadth-first search and 165–343 µs for Dijkstra (`results/salsa.jsonl`). Each tree is
+verified by an independent check: no arc can shorten any distance, and every parent arc is tight and
+leads back to the source. [`docs/sparse.md`](docs/sparse.md) has the details and the neural
+baselines.
+
+## Korea roads: graph or hypergraph partition
+
+[Korea Road Network ETA](https://huggingface.co/datasets/CAMUS-LAB/data-road_network_eta) gives
+OpenStreetMap roads with observed speeds; arcs are weighted by weekday morning-peak travel time. For
+many point-to-point queries on one network, a two-level overlay (customizable route planning) splits
+the network into cells and stores in-cell distances between the cells' boundary nodes; a query searches
+only the cells of its two endpoints plus those stored distances, and stays exact.
+
+Cells come from recursive inertial-flow bisection under two cut models. The graph model cuts edges, so
+both ends of a cut edge become boundary nodes. The hypergraph model cuts nodes, shared by both sides,
+which is a bisection of the dual hypergraph under the connectivity metric and counts boundary nodes
+directly. At the same cell bound, the hypergraph model:
+
+| Region | Nodes | Boundary nodes | Overlay arcs | Nodes settled per query | Query time, paired | Build time |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Sejong | 85,647 | −51 to −54% | −23 to −29% | −44% to +4% | −5 to −50% | 1.0–1.8× |
+| Seoul | 328,610 | −52 to −53% | −16 to −24% | −16 to −51% | −25 to −52% | 1.6–2.2× |
+
+Ranges span cell bounds of 256, 1,024 and 4,096 nodes; the gains are largest for small cells. Every one
+of the 1,500 queries matches plain Dijkstra's distance under both models, and the best overlay answers
+20–22 times faster than plain Dijkstra (`results/roads.jsonl`; times from one paired laptop run, counts
+deterministic). [`docs/sparse.md`](docs/sparse.md) has the full table and the reasons.
+
 ## Limits
 
-- The tie rule is inferred from 2,000 of 2,000 answers; the dataset's generator code is not public.
-- Timings come from one laptop; CI prints a second run on a Linux runner.
-- The certificate is optional and triples the time.
-- Grid reductions (dead-end pruning, corridor contraction) are not implemented. Sparse graphs,
-  resource-constrained paths, network flows, multi-agent routing and convex extensions are not built
-  yet.
-- The dataset declares no licence, so it is fetched by pinned revision and SHA-256 rather than stored.
+- The Maze-Hard tie rule is inferred from 2,000 of 2,000 answers; the dataset's generator code is not
+  public.
+- Timings come from one laptop; CI prints a second run on a Linux runner. Node, arc and settled counts
+  are deterministic.
+- The grid certificate is optional and triples the time.
+- Grid reductions (dead-end pruning, corridor contraction), multilevel overlays, resource-constrained
+  paths, network flows, multi-agent routing and convex extensions are not implemented.
+- No dataset is stored here. Maze-Hard declares no licence and is fetched by pinned revision and
+  SHA-256; SALSA-CLRS (Apache-2.0) and the Korea roads (CC BY-NC 4.0) are fetched by the scripts.
 
 ## Project map
 
@@ -108,9 +158,16 @@ and memory. [`docs/grid.md`](docs/grid.md) gives the formulation, proofs, costs 
 | `src/bin/maze.rs` | scores Maze-Hard CSV files: certified, exact and rating counts per file |
 | `tests/grid.rs` | every wall pattern of eight shapes up to 4×4 against exhaustive path enumeration (every S–G pair up to 9 cells, one random pair above), wide grids against queue search, certificate mutations |
 | `benches/grid.rs` | timing, peak heap and generated-grid scaling against the rivals |
-| `scripts/fetch.py` | downloads the pinned CSVs into `data/` and checks their hashes |
+| `src/graph.rs` | sparse graphs: direction-optimizing breadth-first search, Dijkstra, shortest-path-tree certificate |
+| `src/overlay.rs` | inertial-flow partitions under the graph and hypergraph cut models, two-level overlay, queries |
+| `src/bin/salsa.rs` | scores SALSA-CLRS sets: node and graph accuracy, certified trees |
+| `src/bin/roads.rs` | road queries: plain Dijkstra against overlays of both models |
+| `tests/graph.rs`, `tests/overlay.rs` | searches against Bellman–Ford and relaxation oracles, certificate mutations; overlay distances against Dijkstra |
+| `scripts/fetch.py` | downloads the pinned Maze-Hard CSVs into `data/` and checks their hashes |
 | `scripts/ties.py` | scores the 336 tie-breaking rules on the training split |
-| `results/` | `eval.jsonl` (checked in CI), `bench.md`, `ties.txt` |
+| `scripts/salsa.py`, `scripts/roads.py` | convert SALSA-CLRS test sets and Korea road regions into `data/` |
+| `docs/` | `grid.md` (maze proofs and costs), `sparse.md` (SALSA-CLRS, overlays, cut models) |
+| `results/` | `eval.jsonl` (checked in CI), `bench.md`, `ties.txt`, `salsa.jsonl`, `roads.jsonl` |
 
 ```text
 python scripts/fetch.py
@@ -118,6 +175,10 @@ cargo test --release
 cargo run --release --bin maze -- data/train.csv data/test.csv
 cargo bench --bench grid -- data/test.csv
 python scripts/ties.py train
+python scripts/salsa.py dijkstra          # needs numpy; about 2 GB of text for all 15 sets
+cargo run --release --bin salsa -- dijkstra data/salsa/dijkstra/*.txt
+python scripts/roads.py sejong            # needs pyarrow
+cargo run --release --bin roads -- data/roads/sejong.bin 1000
 ```
 
 Rust 1.87 or later. MIT licence.
