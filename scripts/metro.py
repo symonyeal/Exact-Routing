@@ -343,17 +343,19 @@ def report_text(results):
                 serial = rows[method, 1]["median_qps"]
                 parallel = rows[method, q]["median_qps"]
                 lines.append(f"| {city} | {label} | {method} | {serial:.1f} | {parallel:.1f} | {parallel/serial:.2f}× |")
-    lines.extend(["", "## Preprocessing", "", "Overlay totals sum median build times across all twelve study configurations: six per metric. Deployment builds only its chosen configuration; individual times remain in JSONL. Parallelism covers cell customization; partitioning is serial. CH is one separate rounded-metric build. Ratios are descriptive.",
-                  "| City | Overlay study serial s | With parallel customization s | Serial / parallel | CH build s, rounded |", "|---|---:|---:|---:|---:|"])
+    lines.extend(["", "## Preprocessing", "", "Each overlay total sums median build times across six study configurations for one metric. Deployment builds only its chosen configuration; individual times remain in JSONL. Parallelism covers cell customization; partitioning is serial. CH is one separate rounded-metric build. Ratios are descriptive; regressions below 1 remain visible.",
+                  "| City | Metric | Overlay study serial s | With parallel customization s | Serial / parallel | CH build s |", "|---|---|---:|---:|---:|---:|"])
     for city in sorted(CITIES):
         records = results[city]
-        builds = [r for r in records if r["kind"] == "build" and r["method"] != "fast_paths-CH"]
-        serial = sum(r["serial_s"] for r in builds)
-        parallel = sum(r["parallel_s"] for r in builds)
-        ch = next(r["serial_s"] for r in records if r["kind"] == "build" and r["method"] == "fast_paths-CH")
-        lines.append(f"| {city} | {serial:.2f} | {parallel:.2f} | {serial/parallel:.2f}× | {ch:.2f} |")
+        for scale, label in [(0, "native"), (1000, "rounded")]:
+            builds = [r for r in records if r["kind"] == "build" and r["scale"] == scale and r["method"] != "fast_paths-CH"]
+            serial = sum(r["serial_s"] for r in builds)
+            parallel = sum(r["parallel_s"] for r in builds)
+            ch = f"{next(r['serial_s'] for r in records if r['kind'] == 'build' and r['method'] == 'fast_paths-CH'):.2f}" if scale else "n/a"
+            lines.append(f"| {city} | {label} | {serial:.2f} | {parallel:.2f} | {serial/parallel:.3f}× | {ch} |")
     lines.extend(["", "## Correctness population", "", f"Each city and weight scale: {query_count:,} individually certified query distances; 3 certified full trees. Latency and throughput rows report zero wrong answers; overlay build rows checked parity on all {query_count:,} queries.",
                   "", "## Machine and build provenance", "", f"Queries {query_count:,}; repeats {repeats}; threads {threads}; seed {seed}; git {git_sha}; RUSTFLAGS `{rustflags}`.",
+                  "Comparisons are within each city job. CPU models vary across jobs, so absolute latency differences across cities also reflect different hardware.",
                   "", "| City | CPU | OS | Rust compiler | Logical CPUs | RAM bytes |", "|---|---|---|---|---:|---:|"])
     for city in sorted(CITIES):
         machine = next(r["machine"] for r in results[city] if r["kind"] == "graph" and r["scale"] == 0)

@@ -9,6 +9,24 @@ pub struct Road {
 }
 
 impl Road {
+    /// Keep native seconds at scale 0, or replace each cost by max(1, round(scale * seconds)).
+    pub fn with_scale(mut self, scale: usize) -> Result<Road, &'static str> {
+        if scale > 0 {
+            if self.g.w.iter().any(|w| !(w * scale as f64).is_finite()) {
+                return Err("scaled road cost overflows");
+            }
+            self.g = Graph::new(
+                self.g.n,
+                (0..self.g.n).flat_map(|u| {
+                    self.g
+                        .arcs(u)
+                        .map(move |(v, w)| (u as u32, v, (w * scale as f64).round().max(1.0)))
+                }),
+            );
+        }
+        Ok(self)
+    }
+
     /// Require n,m:u64; lat,lon:f64[n]; tail,head:u32[m]; nonnegative weight:f64[m].
     /// Coordinates must be finite geographic degrees and every endpoint must belong to the graph.
     pub fn decode(b: &[u8]) -> Result<Road, &'static str> {
@@ -57,5 +75,32 @@ impl Road {
             g: Graph::new(n, arcs),
             xy,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn road() -> Road {
+        Road {
+            g: Graph::new(4, [(0, 1, 0.0), (1, 2, 0.0006), (2, 3, 2.25)]),
+            xy: vec![(0.0, 0.0); 4],
+        }
+    }
+
+    #[test]
+    fn metric_preserves_native_costs_and_rounds_with_a_positive_floor() {
+        let native = road().with_scale(0).unwrap();
+        assert_eq!(native.g.arcs(1).next().unwrap().1, 0.0006);
+        let rounded = road().with_scale(1000).unwrap();
+        assert_eq!(rounded.g.arcs(0).next().unwrap().1, 1.0);
+        assert_eq!(rounded.g.arcs(1).next().unwrap().1, 1.0);
+        assert_eq!(rounded.g.arcs(2).next().unwrap().1, 2250.0);
+        let huge = Road {
+            g: Graph::new(2, [(0, 1, f64::MAX)]),
+            xy: vec![(0.0, 0.0); 2],
+        };
+        assert!(huge.with_scale(1000).is_err());
     }
 }

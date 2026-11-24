@@ -83,16 +83,10 @@ fn main() {
     let (q, threads, scale, repeats) = (arg(1, 1000), arg(2, 2), arg(3, 0), arg(4, 3));
     assert!(q > 0 && threads > 0 && repeats > 0);
     let bytes = fs::read(file).expect("read road binary");
-    let Road { mut g, xy } = Road::decode(&bytes).expect("invalid road binary");
-    if scale > 0 {
-        g = Graph::new(
-            g.n,
-            (0..g.n).flat_map(|u| {
-                g.arcs(u)
-                    .map(move |(v, w)| (u as u32, v, (w * scale as f64).round().max(1.0)))
-            }),
-        );
-    }
+    let Road { g, xy } = Road::decode(&bytes)
+        .expect("invalid road binary")
+        .with_scale(scale)
+        .expect("invalid road metric");
     let n = g.n;
     let t0 = Instant::now();
     let r = g.reverse();

@@ -48,6 +48,11 @@ jobs:
           python-version: "3.12"
       - run: pip install numpy pandas pyarrow
       - run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+      - run: node --check maps/app.js
+      - name: Reconcile and rebuild the retained eleven-city report
+        run: |
+          python3 scripts/metro.py report results/metro.jsonl --output results/metro.md
+          git diff --exit-code -- results/metro.md
       - run: cargo build --release
       - name: SALSA-CLRS test sets, every tree certified
         run: |

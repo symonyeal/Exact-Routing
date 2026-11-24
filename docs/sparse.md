@@ -133,6 +133,8 @@ workers. One quarter of pairs follows an 8-arc random walk, one quarter a 32-arc
 uniform pairs. Walks stop at dead ends. Identical endpoints and unreachable pairs remain and are
 counted. Pairs and references are saved. Every reference comes from a full tree whose certificate
 passes; this checks the sampled workload, not every possible pair in a city.
+Native floating-point answers allow an absolute difference of `1e-9 * max(1, reference)` for
+roundoff; rounded integer answers require strict equality.
 
 Sixteen queries warm each implementation. Single-thread timing rotates the first method on each pair
 and pass. Each pair's mean over passes is computed first; p50/p95 are then taken across those means.
@@ -145,6 +147,22 @@ City jobs may use different processors; method comparisons are paired within a j
 `scripts/metro.py` reconciles both metrics, all methods and thread counts, and every required city.
 Missing results, failed scorers, wrong answers and input-hash mismatches fail publication.
 
+The retained [eleven-city report](../results/metro.md) reconciles 22,000 individually certified
+graph/metric query cases with zero wrong answers. Its [JSONL snapshot](../results/metro.jsonl) records
+the exact input hashes, pairs, references, trials and benchmark revision `cee8c6b`. Ten artifacts come
+from run 45282401948; Seoul and the complete merge passed in run 45417405041 after increasing the
+cloud job limit. Both use the same 1,000-query, three-pass, two-worker protocol.
+
+The report can be rebuilt from the retained snapshot without downloading graphs:
+
+```text
+python scripts/metro.py report results/metro.jsonl --output results/metro.md
+```
+
+The manual workflow also accepts `city` (one city or `all`), `benchmark_ref` (the code revision to
+check out) and `previous_run` (completed artifacts to reuse). A retry keeps the original benchmark
+revision and workload; its report still requires the complete eleven-city population.
+
 The source cards checked on 23 November 2026 do not link a comparable exact-routing latency ranking.
 Hugging Face's [leaderboard API](https://huggingface.co/docs/hub/leaderboard-data-guide) ranks submitted
 model scores; SALSA evaluates reasoning accuracy and InstructOSM supplies instruction tasks. This study
@@ -156,8 +174,9 @@ external speed record.
 - One partitioning level and one bisection heuristic; a multilevel overlay or a dedicated hypergraph
   partitioner (KaHyPar, Mt-KaHyPar) may change the margins. The original two-region table uses only
   one-directional Dijkstra; the expanded protocol adds bidirectional search and integer CH.
-- Timings are one paired run on a laptop (Intel Core i5-1335U); node, arc, settled and scanned counts
-  are deterministic. The original table covers two regions; the nationwide graph was not run.
+- The original two-region timings are one paired run on a laptop (Intel Core i5-1335U). The expanded
+  study records each Linux CI runner's CPU and compiler; methods are paired within each city job.
+  Node, arc, settled and scanned counts are deterministic. The nationwide graph was not run.
 - Customizable contraction hierarchies, hub labeling and multilevel CRP are not implemented. This
   study measures ordinary CH and a two-level overlay and claims no new routing algorithm.
 - OpenStreetMap ways are themselves hyperedges over their nodes; that structure is not used here.

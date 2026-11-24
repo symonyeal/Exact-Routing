@@ -5,10 +5,10 @@ Shortest paths solved exactly, each with a proof of optimality, on three public 
 - **Maze-Hard** (30×30 grids): all 1,000 held-out reference answers reproduced, in about 3 µs and at
   most 2.3 KB of heap per maze on a laptop.
 - **SALSA-CLRS** (sparse random graphs up to 1,600 nodes): all 30,000 breadth-first and Dijkstra test
-  trees equal the reference and are certified; the best published neural models solve at most 0.4% of
+  trees equal the reference and are certified; the original SALSA-CLRS paper's best neural models solve at most 0.4% of
   the largest graphs.
-- **Korea road network** (OpenStreetMap with observed travel times): exact point-to-point queries with a
-  two-level overlay, comparing graph and hypergraph partitions of the same network.
+- **Metropolitan roads**: eight Korean city regions and London, New York and Tokyo snapshots, comparing
+  graph and hypergraph overlays, bidirectional search and Rust contraction hierarchies.
 
 ## Maze-Hard
 
@@ -103,7 +103,7 @@ algorithmic reasoners trained on graphs of at most 16 nodes generalize to larger
 Erdős–Rényi, Watts–Strogatz and Delaunay families at 16 to 1,600 nodes, 1,000 test graphs per family
 and size. The answer is the parent of every node in the breadth-first or Dijkstra tree from a source.
 
-| Algorithm | Test graphs | Parents equal to reference | Trees certified | Best neural model at n = 1,600: graphs fully correct (ER / WS / Delaunay) |
+| Algorithm | Test graphs | Parents equal to reference | Trees certified | Best model in the 2023 paper at n = 1,600: graphs fully correct (ER / WS / Delaunay) |
 | --- | ---: | ---: | ---: | --- |
 | Breadth-first search | 15,000 | 100% | 15,000 | 0.4 / 0.0 / 0.0% |
 | Dijkstra | 15,000 | 100% | 15,000 | 0.0 / 0.0 / 0.0% |
@@ -138,17 +138,65 @@ of the 1,500 queries matches plain Dijkstra's distance under both models, and th
 20–22 times faster than plain Dijkstra (`results/roads.jsonl`; times from one paired laptop run, counts
 deterministic). [`docs/sparse.md`](docs/sparse.md) has the full table and the reasons.
 
+## Eleven-city comparison
+
+The expanded study checks 1,000 query cases per city under each of two weight metrics: **22,000
+certified graph/metric cases, with zero mismatches**. All six overlays agree between serial and
+parallel builds. [The full report](results/metro.md) includes every method, mean and tail latency,
+build times, throughput, CPU details and the [retained measurements](results/metro.jsonl).
+
+A hypergraph configuration has the lowest mean latency on native weights in every city. Median
+winners vary: bidirectional Dijkstra leads in New York and Tokyo. Contraction hierarchies have the
+lowest mean and median on every rounded-weight graph. International CH timings are:
+
+| Snapshot | Nodes | Mean µs | Median µs | 95th percentile µs |
+| --- | ---: | ---: | ---: | ---: |
+| London | 50,301 | 28.95 | 16.71 | 68.20 |
+| New York | 50,306 | 49.00 | 35.31 | 116.56 |
+| Tokyo | 50,231 | 20.05 | 14.52 | 45.58 |
+
+These use positive rounded milliseconds and include CH's internal path reconstruction. Each city
+uses its recorded CI runner; method comparisons are paired within that city. Two-worker throughput
+is a median 1.97× the one-worker throughput across the 187 city/metric/method configurations
+(range 1.38–2.45×). Parallel cell customization gives small build gains; partitioning remains serial.
+
+The benchmark code is [`cee8c6b`](https://github.com/symonyeal/Exact-Routing/tree/cee8c6b56118351c690f68645f0da89717663d5d).
+Ten cities completed in [the original study](https://github.com/symonyeal/Exact-Routing/actions/runs/45282401948);
+the [Seoul retry and complete reconciliation](https://github.com/symonyeal/Exact-Routing/actions/runs/45417405041)
+passed with the same code and workload. The checked Hugging Face leaderboard endpoints returned no
+entries for these datasets; this study establishes a matched implementation comparison, not an external record.
+
+## Interactive road maps
+
+```text
+python scripts/serve_maps.py
+```
+
+This builds the Rust path endpoint and opens the [local explorer](http://127.0.0.1:8765/).
+Choose a city, pan or zoom its network, then pick origin and destination nodes or load a measured
+query pair. Every live route comes from Rust Dijkstra with a checked shortest-path-tree certificate.
+Switch between source travel times and the separately rounded millisecond metric, and compare the
+recorded methods by mean, median or 95th-percentile latency.
+
+The HTML uses local graph coordinates, WebGL line rendering and a Canvas fallback. Lines connect
+graph nodes directly; displayed travel costs use the published snapshot weights. International maps
+cover the approximately 50,000-node snapshots. The Python server binds to localhost, fetches missing
+pinned data and checks its hashes. Datasets stay in `data/`; the public repository contains the UI
+and fetchers. Recorded CI query timings are separate from live route response times.
+
 ## Limits
 
 - The Maze-Hard tie rule is inferred from 2,000 of 2,000 answers; the dataset's generator code is not
   public.
-- Timings come from one laptop; CI prints a second run on a Linux runner. Node, arc and settled counts
-  are deterministic.
+- The original maze and two-region road timings come from one laptop. The expanded metropolitan
+  study uses Linux CI runners, with paired method comparisons within each city job. Node, arc and
+  settled counts are deterministic.
 - The grid certificate is optional and triples the time.
 - Grid reductions (dead-end pruning, corridor contraction), multilevel overlays, resource-constrained
-  paths, network flows, multi-agent routing and convex extensions are not implemented.
-- No dataset is stored here. Maze-Hard declares no licence and is fetched by pinned revision and
-  SHA-256; SALSA-CLRS (Apache-2.0) and the Korea roads (CC BY-NC 4.0) are fetched by the scripts.
+  paths, general network-flow benchmarks, multi-agent routing and convex extensions are not implemented.
+- Raw datasets are fetched separately at pinned revisions. Maze-Hard declares no licence;
+  SALSA-CLRS is Apache-2.0 and Korea roads is CC BY-NC 4.0. The scripts retain input hashes and source
+  metadata; international snapshots come from InstructOSM.
 
 ## Project map
 
@@ -169,9 +217,10 @@ deterministic). [`docs/sparse.md`](docs/sparse.md) has the full table and the re
 | `scripts/ties.py` | scores the 336 tie-breaking rules on the training split |
 | `scripts/salsa.py`, `scripts/roads.py` | convert SALSA-CLRS test sets and Korea road regions into `data/` |
 | `scripts/international.py`, `scripts/metro.py` | pinned international GraphML conversion, benchmark validation and metropolitan reports |
+| `maps/`, `scripts/serve_maps.py`, `src/bin/route_path.rs` | interactive road maps, local HTTP service and certified Rust paths |
 | `.github/workflows/metros.yml` | eleven-city study: eight Korean regions plus London, New York and Tokyo snapshots |
 | `docs/` | `grid.md` (maze proofs and costs), `sparse.md` (SALSA-CLRS, overlays, cut models) |
-| `results/` | `eval.jsonl` (checked in CI), `bench.md`, `ties.txt`, `salsa.jsonl`, `roads.jsonl` |
+| `results/` | `eval.jsonl` (checked in CI), `bench.md`, `ties.txt`, `salsa.jsonl`, `roads.jsonl`, `metro.jsonl`, `metro.md` |
 
 ```text
 python scripts/fetch.py

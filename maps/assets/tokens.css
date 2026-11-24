@@ -1,0 +1,17 @@
+:root {
+  color-scheme: light;
+  --paper: #f3f0e8;
+  --paper-raised: #fbf9f3;
+  --paper-line: #d9d5ca;
+  --ink: #182a31;
+  --muted: #637177;
+  --navy: #0b1921;
+  --road: #536770;
+  --road-soft: #263943;
+  --teal: #258c83;
+  --teal-bright: #66c5b4;
+  --amber: #e2a24a;
+  --red: #bb5948;
+  --focus: #087d74;
+  --radius: 5px;
+}

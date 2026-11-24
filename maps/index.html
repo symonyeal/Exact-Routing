@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1921">
+  <title>Exact Routing · Road graphs and routes</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22%3E%3Crect width=%2264%22 height=%2264%22 rx=%2212%22 fill=%22%230b1921%22/%3E%3Cpath d=%22M12 44 26 19l12 25 14-25%22 fill=%22none%22 stroke=%22%2366c5b4%22 stroke-width=%226%22/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="assets/tokens.css">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#map">Skip to road graph</a>
+  <div class="workspace">
+    <aside class="sidebar" aria-label="Route and benchmark controls">
+      <header class="masthead">
+        <a class="wordmark" href="#" aria-label="Exact Routing home">EXACT<span>ROUTING</span></a>
+        <p>Explore road graphs and compare exact routes.</p>
+      </header>
+
+      <section class="city-block" aria-labelledby="city-title">
+        <label class="eyebrow" for="city-select">Road network</label>
+        <select id="city-select" class="city-select" disabled aria-describedby="city-note">
+          <option>Loading cities…</option>
+        </select>
+        <h1 id="city-title">Choose a city</h1>
+        <p id="city-note" class="muted">The graph is a connected-node diagram, not a street basemap.</p>
+        <a id="source-link" class="source-link" href="https://huggingface.co/datasets/HBNU-NLP/InstructOSM" target="_blank" rel="noreferrer">Dataset source <span aria-hidden="true">↗</span></a>
+      </section>
+
+      <section class="route-section" aria-labelledby="route-heading">
+        <div class="section-head">
+          <h2 id="route-heading">Find a route</h2>
+          <button id="clear-route" class="text-button" type="button" disabled>Clear</button>
+        </div>
+        <p class="section-intro">Pick nodes on the graph or enter their IDs.</p>
+        <form id="route-form">
+          <div class="field-row">
+            <label class="node-field origin-field" for="origin-input">
+              <span><i class="marker marker-origin" aria-hidden="true"></i> Origin</span>
+              <input id="origin-input" name="origin" type="number" inputmode="numeric" min="0" step="1" placeholder="Node ID" required>
+            </label>
+            <button id="swap-nodes" class="icon-button swap-button" type="button" aria-label="Swap origin and destination" title="Swap endpoints">⇄</button>
+            <label class="node-field destination-field" for="destination-input">
+              <span><i class="marker marker-destination" aria-hidden="true"></i> Destination</span>
+              <input id="destination-input" name="destination" type="number" inputmode="numeric" min="0" step="1" placeholder="Node ID" required>
+            </label>
+          </div>
+          <div class="pick-row">
+            <label class="eyebrow" for="pick-target">Click graph to set</label>
+            <select id="pick-target" aria-label="Endpoint set by graph click">
+              <option value="origin">Origin</option>
+              <option value="destination">Destination</option>
+            </select>
+          </div>
+          <label class="eyebrow preset-label" for="preset-select">Measured query pair</label>
+          <select id="preset-select" disabled>
+            <option value="">Loading measured pairs…</option>
+          </select>
+          <button id="route-button" class="primary-button" type="submit" disabled>Find exact route <span aria-hidden="true">→</span></button>
+        </form>
+        <div id="route-result" class="route-result" aria-live="polite" aria-atomic="true">
+          <p class="result-placeholder">Choose two node IDs to see their exact route.</p>
+        </div>
+      </section>
+
+      <section class="metric-section" aria-labelledby="metric-heading">
+        <div class="section-head">
+          <h2 id="metric-heading">Route metric</h2>
+        </div>
+        <div class="metric-switch" role="group" aria-label="Edge weight metric">
+          <button type="button" data-scale="0" aria-pressed="true">Source time</button>
+          <button type="button" data-scale="1000" aria-pressed="false">Rounded to ms</button>
+        </div>
+        <p id="metric-note" class="fine-print">Native edge travel times, in seconds.</p>
+        <p class="fine-print">Browser routes always use certified Rust Dijkstra. CH appears only in benchmark comparisons.</p>
+      </section>
+
+      <section class="benchmark-section" aria-labelledby="benchmark-heading">
+        <div class="section-head benchmark-head">
+          <h2 id="benchmark-heading">Measured queries</h2>
+          <label class="stat-select"><span class="visually-hidden">Statistic shown</span>
+            <select id="stat-select" aria-label="Benchmark statistic">
+              <option value="p50_us">Median</option>
+              <option value="mean_us">Mean</option>
+              <option value="p95_us">95th pct.</option>
+            </select>
+          </label>
+        </div>
+        <p id="benchmark-context" class="section-intro">Loading measurements…</p>
+        <p class="benchmark-note">Lower is faster · per-query algorithm time in µs. CH timings include path reconstruction.</p>
+        <div id="benchmark-rows" class="benchmark-rows" aria-live="polite"></div>
+        <details class="build-details">
+          <summary>Preprocessing and method details</summary>
+          <div id="build-rows" class="build-rows"></div>
+        </details>
+        <p id="machine-note" class="fine-print"></p>
+      </section>
+
+      <footer class="sidebar-footer">
+        <p>Routes use the selected graph and metric. Query timings exclude graph loading and are not browser response times.</p>
+        <p>© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a></p>
+        <p id="coverage-note" class="coverage-note">Loading benchmark coverage…</p>
+      </footer>
+    </aside>
+
+    <main id="map" class="map-pane" aria-label="Road graph explorer">
+      <div class="map-stage" id="map-stage">
+        <canvas id="network-canvas" tabindex="0" aria-label="Road graph rendered as straight connections between graph nodes. Use arrow keys to pan, plus and minus to zoom, and zero to fit the graph."></canvas>
+        <canvas id="overlay-canvas" aria-hidden="true"></canvas>
+        <div class="map-caption">
+          <span class="caption-dot" aria-hidden="true"></span>
+          <span>Graph connections · node geometry</span>
+          <span class="map-keys">Arrows pan · +/- zoom · 0 fit</span>
+          <label class="edge-mode"><span>Color</span>
+            <select id="edge-mode" aria-label="Color road connections by">
+              <option value="topology">Topology</option>
+              <option value="time">Travel time</option>
+            </select>
+          </label>
+        </div>
+        <div class="map-tools" aria-label="Map controls">
+          <button id="zoom-out" class="map-button" type="button" aria-label="Zoom out" title="Zoom out">−</button>
+          <button id="zoom-in" class="map-button" type="button" aria-label="Zoom in" title="Zoom in">+</button>
+          <button id="fit-map" class="map-button fit-button" type="button">Fit graph</button>
+        </div>
+        <div id="map-state" class="map-state" role="status" aria-live="polite">
+          <span class="state-mark" aria-hidden="true"></span><span>Loading road graph…</span>
+        </div>
+        <div class="map-legend" aria-label="Map legend">
+          <span><i class="legend-road" aria-hidden="true"></i>Network</span>
+          <span><i class="legend-route" aria-hidden="true"></i>Route</span>
+          <span><i class="legend-origin" aria-hidden="true"></i>Origin</span>
+          <span><i class="legend-destination" aria-hidden="true"></i>Destination</span>
+        </div>
+        <div id="time-legend" class="time-legend" hidden aria-label="Source arc travel-time color scale">
+          <span class="time-title">Source arc time · seconds</span>
+          <span class="time-gradient" aria-hidden="true"></span>
+          <span id="time-range" class="time-range"></span>
+          <span class="time-caption">Logarithmic color ramp · source weights, including rounded-metric view</span>
+        </div>
+        <div id="scale-bar" class="scale-bar" aria-label="Map scale"></div>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

@@ -112,7 +112,12 @@ class ReportTests(unittest.TestCase):
             validate_report_set(results)
 
     def test_report_separates_weight_metrics_and_keeps_losses(self):
-        text = report_text(self.data())
+        results = self.data()
+        for row in results["sejong"]:
+            if row["kind"] == "build" and row["scale"] == 1000 and row["method"] != "fast_paths-CH":
+                row["parallel_s"] = .12
+                row["parallel_trials_s"] = [.12] * 2
+        text = report_text(results)
         self.assertIn("## Native weights", text)
         self.assertIn("## Rounded weights", text)
         self.assertIn("Mean µs | p50 µs | p95 µs", text)
@@ -120,6 +125,8 @@ class ReportTests(unittest.TestCase):
         self.assertIn("fast_paths-CH", text)
         self.assertIn("## Throughput scaling", text)
         self.assertIn("## Machine and build provenance", text)
+        self.assertIn("| sejong | native | 0.60 | 0.48 | 1.250× | n/a |", text)
+        self.assertIn("| sejong | rounded | 0.60 | 0.72 | 0.833× | 0.10 |", text)
 
     def test_loads_consolidated_jsonl_and_rejects_missing_city(self):
         root = Path(__file__).resolve().parents[1] / "target" / "metro-test"
