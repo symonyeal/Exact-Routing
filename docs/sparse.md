@@ -95,8 +95,9 @@ earlier unpaired runs by up to 2.5×.
 **The hypergraph model helps.** At equal U it has 51–54% fewer boundary nodes, as predicted, and
 16–29% fewer overlay arcs. Queries settle 15–51% fewer nodes, except Sejong at U = 4,096 (+4%), and
 take 5–52% less time. The gain is largest for small cells, where boundary nodes are a large share of
-the search; with large cells the search inside the cells of s and t dominates, and those cells are the
-same size in both models. Query time follows settled nodes (heap operations) more closely than arcs
+the search. With larger cells, interior search can offset the smaller interface. Both models use
+the same upper bound U; their actual cell sizes and interior search work can differ. Query time in
+this table follows settled nodes (heap operations) more closely than arcs
 scanned: a separator node belongs to several cells and carries the stored distances of each, so the
 hypergraph overlay scans more arcs per settled node (Seoul, U = 256: 17.3 against 11.8), but the fall
 in settled nodes outweighs it. The best overlay answers a query 20–22 times faster than plain
