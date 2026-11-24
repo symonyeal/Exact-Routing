@@ -254,15 +254,27 @@ def command_run(args):
     partial.replace(args.output)
 
 
-def load_cities(directory):
+def load_cities(source):
     results = {}
-    for path in directory.glob("*.jsonl"):
-        city = path.stem
-        if city in results:
-            raise ValueError(f"duplicate city file {city}")
-        records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if source.is_file():
+        for number, line in enumerate(source.read_text(encoding="utf-8").splitlines(), 1):
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            city = row.get("city")
+            if city not in CITIES:
+                raise ValueError(f"unknown city at line {number}")
+            results.setdefault(city, []).append(row)
+    elif source.is_dir():
+        for path in source.glob("*.jsonl"):
+            city = path.stem
+            if city in results:
+                raise ValueError(f"duplicate city file {city}")
+            results[city] = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    else:
+        raise ValueError("report source must be a JSONL file or directory")
+    for city, records in results.items():
         validate(records, city)
-        results[city] = records
     if set(results) != CITIES:
         raise ValueError(f"expected exactly these cities: {', '.join(sorted(CITIES))}")
     return results
@@ -288,18 +300,18 @@ def validate_report_set(results):
 def report_text(results):
     query_count, repeats, threads, seed, git_sha, rustflags = validate_report_set(results)
     methods = sorted({"dijkstra", "bidirectional"} | {f"{model}-{u}" for model in ("Graph", "Hypergraph") for u in BOUNDS})
-    lines = ["# Metro routing benchmark", "", "Latency values are p50 microseconds across per-query mean latencies; each query mean averages the repeated passes. Native and rounded weights are reported in separate tables.",
+    lines = ["# Metro routing benchmark", "", "Latency tables show mean, p50, and p95 microseconds across per-query mean latencies; each query mean averages the repeated passes. Native and rounded weights are separate. Rankings use p50 only.",
              "Native weights are travel seconds. Rounded weights are max(1, round(1000 × seconds)).",
              "All adapters return distances. CH internally reconstructs a path through its public API; that extra work is included. These are implementation timings, not isolated search kernels or equivalent path-output timings.", "",
-             "## Native weights", "", "| City | Nodes | Method | p50 µs | p95 µs |", "|---|---:|---|---:|---:|"]
+             "## Native weights", "", "| City | Nodes | Method | Mean µs | p50 µs | p95 µs |", "|---|---:|---|---:|---:|---:|"]
     for city in sorted(CITIES):
         records = results[city]
         nodes = next(r["nodes"] for r in records if r["kind"] == "graph" and r["scale"] == 0)
         rows = {r["method"]: r for r in records if r["kind"] == "latency" and r["scale"] == 0}
         for method in methods:
             row = rows[method]
-            lines.append(f"| {city} | {nodes:,} | {method} | {row['p50_us']:.2f} | {row['p95_us']:.2f} |")
-    lines.extend(["", "## Rounded weights", "", "| City | Nodes | Method | p50 µs | p95 µs |", "|---|---:|---|---:|---:|"])
+            lines.append(f"| {city} | {nodes:,} | {method} | {row['mean_us']:.2f} | {row['p50_us']:.2f} | {row['p95_us']:.2f} |")
+    lines.extend(["", "## Rounded weights", "", "| City | Nodes | Method | Mean µs | p50 µs | p95 µs |", "|---|---:|---|---:|---:|---:|"])
     rounded_methods = methods + ["fast_paths-CH"]
     for city in sorted(CITIES):
         records = results[city]
@@ -307,8 +319,8 @@ def report_text(results):
         rows = {r["method"]: r for r in records if r["kind"] == "latency" and r["scale"] == 1000}
         for method in rounded_methods:
             row = rows[method]
-            lines.append(f"| {city} | {nodes:,} | {method} | {row['p50_us']:.2f} | {row['p95_us']:.2f} |")
-    lines.extend(["", "## Best-method comparison", "", "Dijkstra ratios divide Dijkstra p50 by the fastest method p50 at the same scale. H/CH uses the selected best-p50 hypergraph method's paired median of per-query mean-latency ratios.",
+            lines.append(f"| {city} | {nodes:,} | {method} | {row['mean_us']:.2f} | {row['p50_us']:.2f} | {row['p95_us']:.2f} |")
+    lines.extend(["", "## Best-method comparison", "", "Rankings use p50. Dijkstra ratios divide Dijkstra p50 by the fastest method p50 at the same scale. H/CH uses the selected best-p50 hypergraph method's paired median of per-query mean-latency ratios.",
                   "| City | Native fastest | Native Dijkstra / best | Rounded fastest | Rounded Dijkstra / best | Rounded paired H / CH |", "|---|---|---:|---|---:|---:|"])
     for city in sorted(CITIES):
         records = results[city]
@@ -350,7 +362,7 @@ def report_text(results):
 
 
 def command_report(args):
-    results = load_cities(args.directory)
+    results = load_cities(args.source)
     text = report_text(results)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -369,7 +381,7 @@ def parser():
     run.add_argument("--threads", type=int, default=2)
     run.add_argument("--repeats", type=int, default=3)
     report = sub.add_parser("report")
-    report.add_argument("directory", type=Path)
+    report.add_argument("source", type=Path, help="city JSONL directory or one consolidated JSONL file")
     report.add_argument("--output", type=Path)
     return p
 

@@ -1,6 +1,8 @@
+import json
 import unittest
+from pathlib import Path
 
-from metro import BOUNDS, CITIES, KOREA_REVISION, WORLD_REVISION, report_text, validate, validate_report_set
+from metro import BOUNDS, CITIES, KOREA_REVISION, WORLD_REVISION, load_cities, report_text, validate, validate_report_set
 
 
 DIGEST = "a" * 64
@@ -113,9 +115,32 @@ class ReportTests(unittest.TestCase):
         text = report_text(self.data())
         self.assertIn("## Native weights", text)
         self.assertIn("## Rounded weights", text)
+        self.assertIn("Mean µs | p50 µs | p95 µs", text)
+        self.assertIn("Rankings use p50", text)
         self.assertIn("fast_paths-CH", text)
         self.assertIn("## Throughput scaling", text)
         self.assertIn("## Machine and build provenance", text)
+
+    def test_loads_consolidated_jsonl_and_rejects_missing_city(self):
+        root = Path(__file__).resolve().parents[1] / "target" / "metro-test"
+        path = root / "consolidated.jsonl"
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            rows = [row for city in sorted(CITIES) for row in fixture(city)]
+            path.write_text("".join(json.dumps(row, allow_nan=False) + "\n" for row in rows), encoding="utf-8")
+            loaded = load_cities(path)
+            self.assertEqual(set(loaded), CITIES)
+            rows = [row for row in rows if row["city"] != "sejong"]
+            path.write_text("".join(json.dumps(row, allow_nan=False) + "\n" for row in rows), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_cities(path)
+        finally:
+            if path.exists():
+                path.unlink()
+            try:
+                root.rmdir()
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":
