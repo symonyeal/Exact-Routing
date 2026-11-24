@@ -49,6 +49,14 @@ jobs:
       - run: pip install numpy pandas pyarrow
       - run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
       - run: node --check maps/app.js
+      - run: node --check maps/renderer.js
+      - name: Rebuild the algorithm insight evidence
+        run: |
+          python3 scripts/insights.py --output maps/insights.js
+          if ! git diff --quiet -- maps/insights.js; then
+            echo "Regenerate maps/insights.js from the retained evidence."
+            exit 1
+          fi
       - name: Reconcile and rebuild the retained eleven-city report
         run: |
           python3 scripts/metro.py report results/metro.jsonl --output results/metro.md

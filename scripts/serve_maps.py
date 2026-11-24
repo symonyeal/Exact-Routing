@@ -15,7 +15,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from metro import CITIES, KOREA_REVISION, WORLD_REVISION, validate
+from metro import BOUNDS, CITIES, KOREA_REVISION, WORLD_REVISION, validate
 
 KOREA = ("sejong", "seoul", "busan", "daegu", "incheon", "gwangju", "daejeon", "ulsan")
 WORLD = {"london-large": "london", "new_york-large": "new_york", "tokyo-large": "tokyo"}
@@ -34,11 +34,15 @@ STATIC = {
     "/index.html": "maps/index.html",
     "/maps/app.js": "maps/app.js",
     "/app.js": "maps/app.js",
+    "/maps/renderer.js": "maps/renderer.js",
+    "/renderer.js": "maps/renderer.js",
     "/maps/style.css": "maps/style.css",
     "/style.css": "maps/style.css",
     "/maps/assets/tokens.css": "maps/assets/tokens.css",
     "/assets/tokens.css": "maps/assets/tokens.css",
     "/favicon.ico": "maps/favicon.ico",
+    "/insights.js": "maps/insights.js",
+    "/maps/insights.js": "maps/insights.js",
 }
 
 
@@ -48,15 +52,29 @@ class ApiError(Exception):
 
 
 class MapsBackend:
-    def __init__(self, root, results=None, no_fetch=False, route_binary=None, route_runner=None):
+    def __init__(self, root, results=None, no_fetch=False, route_binary=None, route_runner=None,
+                 partition_binary=None, partition_runner=None):
         self.root = Path(root).resolve()
         self.roads = self.root / "data" / "roads"
         self.no_fetch = no_fetch
         self.route_binary = route_binary or self.root / "target" / "release" / ("route_path.exe" if os.name == "nt" else "route_path")
+        self.partition_binary = partition_binary or self.root / "target" / "release" / ("partition_view.exe" if os.name == "nt" else "partition_view")
         self.route_runner = route_runner
+        self.partition_runner = partition_runner
+        self.results_source = Path(results).resolve() if results is not None else None
         self.results = self._read_results(results)
+        self.results_hash = self._results_hash()
         self.locks = {city: threading.Lock() for city in CITIES}
         self.verified = {}
+        self.partition_locks = {(city, bound, scale): threading.Lock()
+                                for city in CITIES for bound in BOUNDS for scale in (0, 1000)}
+        self.partition_gate = threading.Semaphore(1)
+        self.results_lock = threading.Lock()
+
+    def _results_hash(self):
+        if self.results_source is None or not self.results_source.is_file():
+            return None
+        return hashlib.sha256(self.results_source.read_bytes()).hexdigest()
 
     def _read_results(self, source):
         grouped = {}
@@ -176,6 +194,153 @@ class MapsBackend:
             "machine": graph.get("machine") if graph else None,
         }
 
+    def _current_results(self):
+        if self.results_source is None or not self.results_source.is_file():
+            raise ApiError(503, "Partition views require the consolidated frozen results file.")
+        raw = self.results_source.read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        with self.results_lock:
+            if digest != self.results_hash:
+                self.results = self._read_results(self.results_source)
+                self.results_hash = digest
+            return self.results, digest
+
+    def partition(self, city, bound, scale):
+        key = (city, bound, scale)
+        with self.partition_locks[key]:
+            results, results_hash = self._current_results()
+            if city not in results:
+                raise ApiError(404, "No frozen benchmark is available for this city.")
+            binary, metadata = self._ensure_data(city)
+            graph = next(row for row in results[city] if row["kind"] == "graph" and row["scale"] == scale)
+            if graph.get("binary_sha256") != metadata.get("output_sha256"):
+                raise ApiError(409, "Frozen benchmark belongs to a different road graph.")
+            if self.partition_runner is None and not self.partition_binary.is_file():
+                raise ApiError(503, "Partition exporter is not available on this server.")
+            executable_hash = (hashlib.sha256(self.partition_binary.read_bytes()).hexdigest()
+                               if self.partition_runner is None else "test-exporter")
+            cache_key = {
+                "binary_sha256": metadata["output_sha256"],
+                "executable_sha256": executable_hash,
+                "results_sha256": results_hash,
+                "city": city,
+                "bound": bound,
+                "scale": scale,
+            }
+            cache = self.root / "data" / "insights" / f"{city}-{bound}-{scale}.json"
+            sidecar = cache.with_suffix(".key.json")
+            try:
+                saved_key = json.loads(sidecar.read_text(encoding="utf-8"))
+                saved = json.loads(cache.read_text(encoding="utf-8"))
+                if saved_key == cache_key:
+                    self._validate_partition(saved, city, bound, scale, graph, results[city])
+                    return saved
+            except (OSError, ValueError, json.JSONDecodeError, ApiError):
+                pass
+
+            with self.partition_gate:
+                result = self._export_partition(binary, city, bound, scale)
+            self._validate_partition(result, city, bound, scale, graph, results[city])
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache_partial, key_partial = cache.with_suffix(".partial"), sidecar.with_suffix(".partial")
+            cache_partial.write_text(json.dumps(result, separators=(",", ":"), allow_nan=False) + "\n", encoding="utf-8")
+            key_partial.write_text(json.dumps(cache_key, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+            cache_partial.replace(cache)
+            key_partial.replace(sidecar)
+            return result
+
+    def _export_partition(self, binary, city, bound, scale):
+        if self.partition_runner:
+            try:
+                return self.partition_runner(binary, self.results_source, city, bound, scale)
+            except Exception as exc:
+                raise ApiError(502, "Partition view generation failed.") from exc
+        try:
+            completed = subprocess.run(
+                [str(self.partition_binary), str(binary), str(self.results_source), city, str(bound), str(scale)],
+                cwd=self.root, check=True, capture_output=True, text=True, timeout=240,
+            )
+            return json.loads(completed.stdout)
+        except subprocess.TimeoutExpired as exc:
+            raise ApiError(504, "Partition view generation timed out.") from exc
+        except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+            raise ApiError(502, "Partition view generation failed.") from exc
+
+    @staticmethod
+    def _validate_partition(data, city, bound, scale, graph, records):
+        n, m = graph["nodes"], graph["arcs"]
+        if (not isinstance(data, dict) or data.get("schema") != 1 or data.get("city") != city
+                or data.get("bound") != bound or data.get("scale") != scale
+                or data.get("nodes") != n or data.get("arcs") != m):
+            raise ApiError(502, "Partition view metadata did not match the request.")
+        tail, head = data.get("tail"), data.get("head")
+        if (not isinstance(tail, list) or not isinstance(head, list) or len(tail) != m or len(head) != m
+                or any(not isinstance(v, int) or isinstance(v, bool) or not 0 <= v < n for v in tail + head)):
+            raise ApiError(502, "Partition view graph arrays were invalid.")
+        builds = {row["method"]: row for row in records if row["kind"] == "build" and row["scale"] == scale}
+        models = data.get("models")
+        if not isinstance(models, dict) or set(models) != {"Graph", "Hypergraph"}:
+            raise ApiError(502, "Partition view models were invalid.")
+        for model in ("Graph", "Hypergraph"):
+            method = f"{model}-{bound}"
+            saved = builds[method]
+            item = models[model]
+            if not isinstance(item, dict):
+                raise ApiError(502, "Partition view model record was invalid.")
+            expected = {"cells": saved["cells"], "boundary": saved["boundary"],
+                        "overlay_arcs": saved["arcs"], "array_bytes": saved["array_bytes"]}
+            if any(item.get(key) != value for key, value in expected.items()):
+                raise ApiError(502, "Partition view structure differs from frozen benchmark counts.")
+            arc_cells, boundary_nodes = item.get("arc_cells"), item.get("boundary_nodes")
+            if (not isinstance(arc_cells, list) or len(arc_cells) != m
+                    or any(cell is not None and (not isinstance(cell, int) or isinstance(cell, bool) or not 0 <= cell < item["cells"])
+                           for cell in arc_cells)
+                    or not isinstance(boundary_nodes, list)
+                    or len(boundary_nodes) != item["boundary"]
+                    or any(not isinstance(v, int) or isinstance(v, bool) or not 0 <= v < n for v in boundary_nodes)
+                    or len(set(boundary_nodes)) != len(boundary_nodes)):
+                raise ApiError(502, "Partition view node and arc labels were invalid.")
+        graph_row = next(row for row in records if row["kind"] == "graph" and row["scale"] == scale)
+        pairs, references = graph_row["pairs"], graph_row["reference"]
+        presets = (0, 1, 2, 3, 125, 126, 501, 502, 750, 999)
+        queries = data.get("queries")
+        if not isinstance(queries, list) or len(queries) != len(presets):
+            raise ApiError(502, "Partition view query population was invalid.")
+        for query, index in zip(queries, presets):
+            if not isinstance(query, dict):
+                raise ApiError(502, "Partition view query row was invalid.")
+            source, target = pairs[index]
+            category = "walk8" if index % 4 == 0 else "walk32" if index % 4 == 1 else "uniform"
+            distance = references[index]
+            if (query.get("index") != index or not isinstance(query.get("source"), int) or isinstance(query.get("source"), bool)
+                    or not isinstance(query.get("target"), int) or isinstance(query.get("target"), bool)
+                    or query.get("source") != source or query.get("target") != target
+                    or query.get("category") != category or query.get("certified") is not True
+                    or (distance is None) != (query.get("distance") is None)):
+                raise ApiError(502, "Partition view query identities differ from frozen results.")
+            if distance is not None and (not isinstance(query["distance"], (int, float)) or isinstance(query["distance"], bool)
+                    or (query["distance"] != distance if scale == 1000 else
+                        not math.isclose(query["distance"], distance, rel_tol=1e-9, abs_tol=1e-9))):
+                raise ApiError(502, "Partition view query distance differs from frozen results.")
+            dijkstra = query.get("dijkstra")
+            if not isinstance(dijkstra, dict) or any(not isinstance(dijkstra.get(key), int) or isinstance(dijkstra[key], bool) or dijkstra[key] < 0
+                                                     for key in ("settled", "scanned")):
+                raise ApiError(502, "Partition view Dijkstra trace was invalid.")
+            for model in ("Graph", "Hypergraph"):
+                metrics = query.get(model)
+                if not isinstance(metrics, dict) or any(not isinstance(metrics.get(key), int) or isinstance(metrics[key], bool) or metrics[key] < 0
+                                                        for key in ("settled", "scanned", "boundary_settled", "interior_settled")):
+                    raise ApiError(502, "Partition view query counts were invalid.")
+                nodes = metrics.get("settled_nodes")
+                boundary = models[model]["boundary_nodes"]
+                if (not isinstance(nodes, list) or len(nodes) != metrics["settled"]
+                        or any(not isinstance(v, int) or isinstance(v, bool) or not 0 <= v < n for v in nodes)
+                        or len(set(nodes)) != len(nodes)
+                        or metrics["boundary_settled"] != len(set(nodes).intersection(boundary))
+                        or metrics["interior_settled"] + metrics["boundary_settled"] != metrics["settled"]):
+                    raise ApiError(502, "Partition view settled-node list was invalid.")
+        return data
+
     def route(self, city, source, target, scale):
         binary, metadata = self._ensure_data(city)
         n = metadata.get("node_count")
@@ -248,6 +413,10 @@ class MapsBackend:
                         city, scale = params["city"], _scale(params["scale"])
                         _city(city)
                         self._send(200, backend.benchmark(city, scale))
+                    elif path == "/api/partition":
+                        params = self._query(("city", "bound", "scale"))
+                        city, bound, scale = _city(params["city"]), _bound(params["bound"]), _scale(params["scale"])
+                        self._send(200, backend.partition(city, bound, scale))
                     elif path == "/api/network":
                         params = self._query(("city",))
                         city = _city(params["city"])
@@ -305,6 +474,12 @@ def _scale(value):
     return int(value)
 
 
+def _bound(value):
+    if value not in tuple(str(bound) for bound in BOUNDS):
+        raise ApiError(400, "Partition bound must be 256, 1024, or 4096.")
+    return int(value)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8765)
@@ -316,8 +491,8 @@ def main():
     if not 1 <= args.port <= 65535:
         parser.error("--port must be from 1 to 65535")
     executable = root / "target" / "release" / ("route_path.exe" if os.name == "nt" else "route_path")
-    print("Checking the Rust route build...", flush=True)
-    subprocess.run(["cargo", "build", "--release", "--locked", "--bin", "route_path"], cwd=root, check=True)
+    print("Building the route and partition tools once...", flush=True)
+    subprocess.run(["cargo", "build", "--release", "--locked", "--bin", "route_path", "--bin", "partition_view"], cwd=root, check=True)
     results = args.results if args.results.is_absolute() else root / args.results
     backend = MapsBackend(root, results, args.no_fetch, executable)
     server = ThreadingHTTPServer(("127.0.0.1", args.port), backend.handler())

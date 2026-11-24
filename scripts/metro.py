@@ -303,6 +303,7 @@ def report_text(results):
     lines = ["# Metro routing benchmark", "", "Latency tables show mean, p50, and p95 microseconds across per-query mean latencies; each query mean averages the repeated passes. Native and rounded weights are separate. Rankings use p50 only.",
              "Native weights are travel seconds. Rounded weights are max(1, round(1000 × seconds)).",
              "All adapters return distances. CH internally reconstructs a path through its public API; that extra work is included. These are implementation timings, not isolated search kernels or equivalent path-output timings.", "",
+             "Calls include clearing the previous query's touched state. The original query order is fixed (8-arc walk, 32-arc walk, uniform, uniform), so group timings include that preceding-query context. The [controlled query-order diagnostic](insights.md) exposes this carryover; these historical numbers remain unchanged and describe that workload.", "",
              "## Native weights", "", "| City | Nodes | Method | Mean µs | p50 µs | p95 µs |", "|---|---:|---|---:|---:|---:|"]
     for city in sorted(CITIES):
         records = results[city]

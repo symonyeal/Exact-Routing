@@ -59,6 +59,29 @@ impl Overlay {
             + size_of::<usize>() * self.off.len()
             + 8 * self.w.len()
     }
+
+    /// Cell IDs for base arcs in graph CSR order; `None` marks a cut arc.
+    pub fn arc_cells(&self) -> impl Iterator<Item = Option<u32>> + '_ {
+        self.cell.iter().map(|&c| (c != NONE).then_some(c))
+    }
+
+    /// The cell containing an interior node, or `None` for a boundary or isolated node.
+    pub fn interior_cell(&self, v: usize) -> Option<u32> {
+        self.home.get(v).copied().filter(|&c| c < NONE - 1)
+    }
+
+    /// Whether `v` is a boundary node.
+    pub fn is_boundary(&self, v: usize) -> bool {
+        self.home.get(v) == Some(&NONE)
+    }
+
+    /// Boundary node IDs in ascending order.
+    pub fn boundary_nodes(&self) -> impl Iterator<Item = usize> + '_ {
+        self.home
+            .iter()
+            .enumerate()
+            .filter_map(|(v, &c)| (c == NONE).then_some(v))
+    }
 }
 
 /// Partition the edges of g into cells of at most `u` nodes and build the overlay. `xy` are planar
@@ -445,11 +468,68 @@ impl Search {
             Some(o),
         )
     }
+
+    /// Nodes settled by the most recent run, in ascending ID order.
+    pub fn settled_nodes(&self) -> impl Iterator<Item = usize> + '_ {
+        self.done
+            .iter()
+            .enumerate()
+            .filter_map(|(v, &done)| done.then_some(v))
+    }
+
+    /// Number of nodes whose distance state will be reset before the next run.
+    pub fn touched_count(&self) -> usize {
+        self.touched.len()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Model, cut};
+    use super::{Model, Search, build, cut};
+    use crate::graph::Graph;
+
+    #[test]
+    fn diagnostic_getters_match_search_state_and_overlay_partition() {
+        let g = Graph::new(
+            6,
+            [
+                (0, 1, 0.0),
+                (1, 2, 2.0),
+                (2, 0, 1.0),
+                (2, 3, 1.0),
+                (3, 4, 1.0),
+            ],
+        );
+        let xy = vec![(0.0, 0.0); g.n];
+        for model in [Model::Graph, Model::Hypergraph] {
+            let o = build(&g, &xy, 2, model);
+            let boundaries: Vec<_> = o.boundary_nodes().collect();
+            assert_eq!(boundaries.len(), o.boundary);
+            assert!(boundaries.windows(2).all(|w| w[0] < w[1]));
+            assert!(
+                boundaries
+                    .iter()
+                    .all(|&v| o.is_boundary(v) && o.interior_cell(v).is_none())
+            );
+            assert!((0..g.n).all(|v| !o.is_boundary(v) || o.interior_cell(v).is_none()));
+            assert_eq!(o.arc_cells().count(), g.head.len());
+            assert!(o.arc_cells().flatten().all(|c| (c as usize) < o.cells));
+            assert!((0..g.n).any(|v| o.interior_cell(v).is_some()));
+            assert!(o.interior_cell(5).is_none());
+
+            let mut q = Search::new(g.n);
+            assert_eq!(q.query(&g, &o, 0, 3), 3.0);
+            let settled: Vec<_> = q.settled_nodes().collect();
+            assert_eq!(settled.len(), q.settled);
+            assert!(q.touched_count() >= q.settled);
+            assert!(settled.contains(&3));
+            assert_eq!(q.query(&g, &o, 5, 5), 0.0);
+            assert_eq!(q.settled_nodes().collect::<Vec<_>>(), vec![5]);
+            assert_eq!(q.touched_count(), 1);
+            assert!(q.query(&g, &o, 5, 0).is_infinite());
+            assert_eq!(q.settled_nodes().count(), q.settled);
+        }
+    }
 
     #[test]
     fn blocking_flow_cuts_match_exhaustive_separators() {

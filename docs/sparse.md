@@ -144,6 +144,13 @@ medians. Throughput is a separate batch measurement including thread launch/join
 with workspace allocation excluded. CPU model, OS, compiler, flags and revision accompany each city.
 City jobs may use different processors; method comparisons are paired within a job.
 
+Each reusable search clears its previous touched state at the start of the next call. That cleanup
+is included in the measured API cost. In the fixed walk8, walk32, uniform, uniform cycle, the walk8
+group therefore inherits a preceding uniform query's cleanup. Group medians describe this sequence,
+not isolated costs of the current query. A separate [controlled replay](../results/insights.md)
+reverses the same pairs and separately times preparation while retaining its cost in the total.
+Reversal also changes cache and temporal context, so it does not isolate every microsecond to cleanup.
+
 `scripts/metro.py` reconciles both metrics, all methods and thread counts, and every required city.
 Missing results, failed scorers, wrong answers and input-hash mismatches fail publication.
 
@@ -168,6 +175,21 @@ Hugging Face's [leaderboard API](https://huggingface.co/docs/hub/leaderboard-dat
 model scores; SALSA evaluates reasoning accuracy and InstructOSM supplies instruction tasks. This study
 compares a published Rust routing implementation on matching inputs and hardware; it establishes no
 external speed record.
+
+## Inspect the algorithm's work
+
+`python scripts/serve_maps.py` opens the local HTML study. Its charts are derived from the frozen
+eleven-city results; `python scripts/insights.py --output maps/insights.js` rebuilds them without
+downloading graphs. They show the boundary/latency crossover, workload cost distributions and the
+separate controlled replay. They also work when opening `maps/index.html` directly.
+
+The spatial comparison requires the local server and the pinned road binary. `/api/partition` runs
+`partition_view` for the selected city, cell bound and metric, then caches the validated output in
+`data/insights/`. The exporter checks cell, boundary, overlay-arc and array-byte counts against the
+frozen benchmark before exporting actual arc-cell assignments, boundary nodes and ten frozen search
+traces. Every trace uses a certified reference tree; both overlay distances are checked. Synchronized
+views distinguish settled boundary and interior nodes and display their counts beside the geometry.
+No arbitrary route query is needed to inspect this evidence.
 
 ## Limits
 

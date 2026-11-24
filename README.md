@@ -147,7 +147,7 @@ build times, throughput, CPU details and the [retained measurements](results/met
 
 A hypergraph configuration has the lowest mean latency on native weights in every city. Median
 winners vary: bidirectional Dijkstra leads in New York and Tokyo. Contraction hierarchies have the
-lowest mean and median on every rounded-weight graph. International CH timings are:
+lowest mean and median on every rounded-weight graph. These describe the fixed stateful query stream, including previous-query cleanup; the controlled diagnostic below separates that context. International CH timings are:
 
 | Snapshot | Nodes | Mean µs | Median µs | 95th percentile µs |
 | --- | ---: | ---: | ---: | ---: |
@@ -166,23 +166,34 @@ the [Seoul retry and complete reconciliation](https://github.com/symonyeal/Exact
 passed with the same code and workload. The checked Hugging Face leaderboard endpoints returned no
 entries for these datasets; this study establishes a matched implementation comparison, not an external record.
 
-## Interactive road maps
+## Algorithm insights
 
 ```text
 python scripts/serve_maps.py
 ```
 
-This builds the Rust path endpoint and opens the [local explorer](http://127.0.0.1:8765/).
-Choose a city, pan or zoom its network, then pick origin and destination nodes or load a measured
-query pair. Every live route comes from Rust Dijkstra with a checked shortest-path-tree certificate.
-Switch between source travel times and the separately rounded millisecond metric, and compare the
-recorded methods by mean, median or 95th-percentile latency.
+The [local study](http://127.0.0.1:8765/) explains the measured behavior through three connected views:
 
-The HTML uses local graph coordinates, WebGL line rendering and a Canvas fallback. Lines connect
-graph nodes directly; displayed travel costs use the published snapshot weights. International maps
-cover the approximately 50,000-node snapshots. The Python server binds to localhost, fetches missing
-pinned data and checks its hashes. Datasets stay in `data/`; the public repository contains the UI
-and fetchers. Recorded CI query timings are separate from live route response times.
+- A controlled replay shows how each call clears the previous query's touched state. Reversing the
+  same pairs shifts that cost between groups, despite identical current-query settled/scanned counts.
+  The preparation condition retains its separately measured cost in the total.
+- Across 33 native-weight graph/hypergraph comparisons, median boundary reduction is 52.2%, while
+  the median ratio of mean query times is 1.52x and of p50 times is 1.09x. At U=256, hypergraph wins
+  all eleven p50 comparisons; at U=4096 it wins four. Observed small differences may be timing noise.
+- Synchronized geographic views show actual cell assignments, boundary nodes and settled-node masks
+  from Rust, with the same query and objective. They distinguish boundary work from interior work;
+  they do not simulate a search or offer a general route planner.
+
+[Findings and measurement limits](results/insights.md) accompany the retained diagnostic in
+`results/query-order.json`. The frozen metropolitan measurements are unchanged. Their group timing
+columns include prior-query cleanup and cannot be interpreted as isolated costs of those routes.
+
+Rebuild the processed HTML evidence with `python scripts/insights.py`. The aggregate plots also open
+from `maps/index.html` directly; live partition proofs use the localhost server, pinned local graph
+binaries and a cache in `data/insights/`. `python scripts/query_order.py` reruns the registered Sejong
+and London diagnostic with native weights and three passes. Its timings are local measurements,
+separate from the Linux city study; compiler, source hashes, binary hash and dirty-tree state are
+retained. The server checks frozen graph hashes and structural counts before drawing a partition.
 
 ## Limits
 
@@ -217,7 +228,8 @@ and fetchers. Recorded CI query timings are separate from live route response ti
 | `scripts/ties.py` | scores the 336 tie-breaking rules on the training split |
 | `scripts/salsa.py`, `scripts/roads.py` | convert SALSA-CLRS test sets and Korea road regions into `data/` |
 | `scripts/international.py`, `scripts/metro.py` | pinned international GraphML conversion, benchmark validation and metropolitan reports |
-| `maps/`, `scripts/serve_maps.py`, `src/bin/route_path.rs` | interactive road maps, local HTTP service and certified Rust paths |
+| `maps/`, `scripts/serve_maps.py`, `src/bin/partition_view.rs` | algorithm insights, validated partition geometry and actual query footprints |
+| `scripts/insights.py`, `src/bin/query_order.rs`, `scripts/query_order.py` | reproducible analysis and controlled query-order diagnostic |
 | `.github/workflows/metros.yml` | eleven-city study: eight Korean regions plus London, New York and Tokyo snapshots |
 | `docs/` | `grid.md` (maze proofs and costs), `sparse.md` (SALSA-CLRS, overlays, cut models) |
 | `results/` | `eval.jsonl` (checked in CI), `bench.md`, `ties.txt`, `salsa.jsonl`, `roads.jsonl`, `metro.jsonl`, `metro.md` |
