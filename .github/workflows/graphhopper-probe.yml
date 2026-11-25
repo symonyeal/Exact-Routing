@@ -1,0 +1,41 @@
+name: GraphHopper conversion probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: external/graphhopper/pom.xml
+      - run: pip install numpy osmium
+      - name: Pin release source and licence
+        shell: bash
+        run: |
+          test "$(git ls-remote https://github.com/graphhopper/graphhopper.git refs/tags/11.0 | cut -f1)" = 69e50f6e2cfaf0a8e69752df9953ee5f1ac276a4
+          curl --fail -L https://raw.githubusercontent.com/graphhopper/graphhopper/69e50f6e2cfaf0a8e69752df9953ee5f1ac276a4/LICENSE.txt | head -10
+      - run: mvn -B -f external/graphhopper/pom.xml package
+      - name: Directed graph conversion and re-priced native queries
+        run: |
+          python scripts/industry.py fixture data/industry-fixture.bin
+          python scripts/industry.py export data/industry-fixture.bin data/industry-probe
+          python scripts/industry_graphhopper.py data/industry-fixture.bin data/industry-probe/graph.osm.pbf results/industry/graphhopper-probe.jsonl --passes 0 --slots 0,1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: graphhopper-probe
+          path: results/industry/*
+          if-no-files-found: ignore

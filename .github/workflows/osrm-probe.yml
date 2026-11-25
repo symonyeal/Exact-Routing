@@ -1,0 +1,50 @@
+name: OSRM adapter probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  OSRM_TAG: v5.27.1
+  OSRM_COMMIT: 4f3ee609ec1af40eb1f445c6706cfa5beb04c990
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build the pinned native engine and benchmark adapter
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends cmake libboost-all-dev libtbb-dev libexpat1-dev libbz2-dev liblua5.4-dev zlib1g-dev
+          git clone --quiet --depth 1 --branch "$OSRM_TAG" https://github.com/Project-OSRM/osrm-backend external/osrm/source
+          test "$(git -C external/osrm/source rev-parse HEAD)" = "$OSRM_COMMIT"
+          head -10 external/osrm/source/LICENSE.TXT
+          cmake -S external/osrm -B external/osrm/build -DOSRM_SOURCE="$PWD/external/osrm/source" -DCMAKE_BUILD_TYPE=Release
+          cmake --build external/osrm/build --parallel 2 --target osrm-bench osrm-extract osrm-contract osrm-partition osrm-customize
+      - run: pip install numpy osmium
+      - name: Convert a directed graph, update CH and MLD, and re-price native paths
+        run: |
+          python scripts/industry.py fixture data/industry-fixture.bin
+          python scripts/industry_osrm.py run data/industry-fixture.bin data/osrm-fixture results/industry/osrm-probe.jsonl --build external/osrm/build --passes 0 --slots 0,1
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: osrm-probe
+          path: |
+            results/industry/*.jsonl
+            results/industry/*.partial
+            data/osrm-fixture/preparation.json
+            data/osrm-fixture/process.time.txt
+          if-no-files-found: ignore
+          retention-days: 30
