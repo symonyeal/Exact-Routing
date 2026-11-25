@@ -74,6 +74,91 @@ fn percentile(x: &[f64], p: f64) -> f64 {
     x[((p * x.len() as f64).ceil() as usize).max(1) - 1]
 }
 
+fn pairs(g: &Graph, q: usize) -> Vec<(usize, usize)> {
+    let n = g.n;
+    let mut z = 20261123;
+    (0..q)
+        .map(|i| {
+            let s = mix(&mut z) as usize % n;
+            let mut t = mix(&mut z) as usize % n;
+            if i % 4 < 2 {
+                t = s;
+                for _ in 0..if i % 4 == 0 { 8 } else { 32 } {
+                    let arcs: Vec<_> = g.arcs(t).collect();
+                    if arcs.is_empty() {
+                        break;
+                    }
+                    t = arcs[mix(&mut z) as usize % arcs.len()].0 as usize;
+                }
+            }
+            (s, t)
+        })
+        .collect()
+}
+
+fn build_overlays(
+    g: &Graph,
+    xy: &[(f64, f64)],
+    repeats: usize,
+    threads: usize,
+    pairs: &[(usize, usize)],
+    expected: &[f64],
+    scale: usize,
+) -> (Vec<Overlay>, Vec<String>) {
+    let n = g.n;
+    let q = pairs.len();
+    let mut overlays = Vec::new();
+    let mut names = vec!["dijkstra".to_string(), "bidirectional".to_string()];
+    for model in [Model::Graph, Model::Hypergraph] {
+        for u in [256, 1024, 4096] {
+            let name = format!("{model:?}-{u}");
+            let (mut serial, mut parallel) = (None, None);
+            let (mut serial_trials, mut parallel_trials) = (Vec::new(), Vec::new());
+            for rep in 0..repeats {
+                for is_parallel in [rep % 2 == 0, rep % 2 != 0] {
+                    let t0 = Instant::now();
+                    let o = build_parallel(g, xy, u, model, if is_parallel { threads } else { 1 });
+                    let seconds = t0.elapsed().as_secs_f64();
+                    if is_parallel {
+                        parallel_trials.push(seconds);
+                        parallel = Some(o);
+                    } else {
+                        serial_trials.push(seconds);
+                        serial = Some(o);
+                    }
+                }
+            }
+            let (serial, parallel) = (serial.unwrap(), parallel.unwrap());
+            let serial_s = percentile(&serial_trials, 0.5);
+            let parallel_s = percentile(&parallel_trials, 0.5);
+            assert_eq!(
+                (serial.cells, serial.boundary, serial.arcs()),
+                (parallel.cells, parallel.boundary, parallel.arcs())
+            );
+            let (mut a, mut b) = (Search::new(n), Search::new(n));
+            for (&(s, t), &want) in pairs.iter().zip(expected) {
+                let x = a.query(g, &serial, s, t);
+                let y = b.query(g, &parallel, s, t);
+                assert_eq!(x, y, "serial/parallel {name} {s}->{t}");
+                assert!(
+                    equal(x, want, scale > 0),
+                    "incorrect {name} {s}->{t}: {x} vs {want}"
+                );
+            }
+            println!(
+                "{}",
+                json!({"kind":"build", "method":name, "serial_s":serial_s, "parallel_s":parallel_s,
+                "serial_trials_s":serial_trials, "parallel_trials_s":parallel_trials,
+                "threads":threads, "cells":parallel.cells, "boundary":parallel.boundary,
+                "arcs":parallel.arcs(), "array_bytes":parallel.bytes(), "parity_queries":q, "wrong":0})
+            );
+            names.push(name);
+            overlays.push(parallel);
+        }
+    }
+    (overlays, names)
+}
+
 fn main() {
     let args: Vec<_> = env::args().skip(1).collect();
     let file = args
@@ -91,24 +176,7 @@ fn main() {
     let t0 = Instant::now();
     let r = g.reverse();
     let reverse_s = t0.elapsed().as_secs_f64();
-    let mut z = 20261123;
-    let pairs: Vec<_> = (0..q)
-        .map(|i| {
-            let s = mix(&mut z) as usize % n;
-            let mut t = mix(&mut z) as usize % n;
-            if i % 4 < 2 {
-                t = s;
-                for _ in 0..if i % 4 == 0 { 8 } else { 32 } {
-                    let arcs: Vec<_> = g.arcs(t).collect();
-                    if arcs.is_empty() {
-                        break;
-                    }
-                    t = arcs[mix(&mut z) as usize % arcs.len()].0 as usize;
-                }
-            }
-            (s, t)
-        })
-        .collect();
+    let pairs = pairs(&g, q);
     for s in [0, n / 2, n - 1] {
         assert!(
             check(&g, s, &dijkstra(&g, s), false),
@@ -138,56 +206,7 @@ fn main() {
         "reachable":expected.iter().filter(|x| x.is_finite()).count(), "identical_endpoints":pairs.iter().filter(|(s,t)|s==t).count()})
     );
 
-    let mut overlays = Vec::new();
-    let mut names = vec!["dijkstra".to_string(), "bidirectional".to_string()];
-    for model in [Model::Graph, Model::Hypergraph] {
-        for u in [256, 1024, 4096] {
-            let name = format!("{model:?}-{u}");
-            let (mut serial, mut parallel) = (None, None);
-            let (mut serial_trials, mut parallel_trials) = (Vec::new(), Vec::new());
-            for rep in 0..repeats {
-                for is_parallel in [rep % 2 == 0, rep % 2 != 0] {
-                    let t0 = Instant::now();
-                    let o =
-                        build_parallel(&g, &xy, u, model, if is_parallel { threads } else { 1 });
-                    let seconds = t0.elapsed().as_secs_f64();
-                    if is_parallel {
-                        parallel_trials.push(seconds);
-                        parallel = Some(o);
-                    } else {
-                        serial_trials.push(seconds);
-                        serial = Some(o);
-                    }
-                }
-            }
-            let (serial, parallel) = (serial.unwrap(), parallel.unwrap());
-            let serial_s = percentile(&serial_trials, 0.5);
-            let parallel_s = percentile(&parallel_trials, 0.5);
-            assert_eq!(
-                (serial.cells, serial.boundary, serial.arcs()),
-                (parallel.cells, parallel.boundary, parallel.arcs())
-            );
-            let (mut a, mut b) = (Search::new(n), Search::new(n));
-            for (&(s, t), &want) in pairs.iter().zip(&expected) {
-                let x = a.query(&g, &serial, s, t);
-                let y = b.query(&g, &parallel, s, t);
-                assert_eq!(x, y, "serial/parallel {name} {s}->{t}");
-                assert!(
-                    equal(x, want, scale > 0),
-                    "incorrect {name} {s}->{t}: {x} vs {want}"
-                );
-            }
-            println!(
-                "{}",
-                json!({"kind":"build", "method":name, "serial_s":serial_s, "parallel_s":parallel_s,
-                "serial_trials_s":serial_trials, "parallel_trials_s":parallel_trials,
-                "threads":threads, "cells":parallel.cells, "boundary":parallel.boundary,
-                "arcs":parallel.arcs(), "array_bytes":parallel.bytes(), "parity_queries":q, "wrong":0})
-            );
-            names.push(name);
-            overlays.push(parallel);
-        }
-    }
+    let (overlays, mut names) = build_overlays(&g, &xy, repeats, threads, &pairs, &expected, scale);
     let ch = (scale > 0).then(|| {
         let t0 = Instant::now();
         let ch = Ch::new(&g);

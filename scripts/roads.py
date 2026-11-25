@@ -45,19 +45,7 @@ def encode(nodes, edges, slot):
     if (np.abs(lat) > 90).any() or (np.abs(lon) > 180).any():
         raise ValueError("node coordinates must be geographic degrees")
 
-    endpoints = []
-    for name in ("source", "target"):
-        values = edges[name].to_numpy()
-        try:
-            numeric = values.astype(np.float64)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"edge {name} values must be integers") from exc
-        if not (np.isfinite(numeric).all() and np.equal(numeric, np.floor(numeric)).all()):
-            raise ValueError(f"edge {name} values must be integers")
-        if ((numeric < 0) | (numeric >= n)).any():
-            raise ValueError(f"edge {name} endpoint is outside 0..{n - 1}")
-        endpoints.append(numeric.astype(np.uint32))
-    u, v = endpoints
+    u, v = _endpoints(edges, n)
 
     length = edges.length_m.to_numpy(np.float64)
     if not (np.isfinite(length).all() and (length >= 0).all()):
@@ -81,6 +69,22 @@ def encode(nodes, edges, slot):
         (lat, "<f8"), (lon, "<f8"), (tail, "<u4"), (head, "<u4"), (weights, "<f8")
     ))
     return b"".join(parts), n, len(tail)
+
+
+def _endpoints(edges, n):
+    endpoints = []
+    for name in ("source", "target"):
+        values = edges[name].to_numpy()
+        try:
+            numeric = values.astype(np.float64)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"edge {name} values must be integers") from exc
+        if not (np.isfinite(numeric).all() and np.equal(numeric, np.floor(numeric)).all()):
+            raise ValueError(f"edge {name} values must be integers")
+        if ((numeric < 0) | (numeric >= n)).any():
+            raise ValueError(f"edge {name} endpoint is outside 0..{n - 1}")
+        endpoints.append(numeric.astype(np.uint32))
+    return endpoints
 
 
 def read_table(name, columns):

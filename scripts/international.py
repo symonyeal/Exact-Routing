@@ -60,6 +60,24 @@ def encode(raw):
                     values[key[1]] = item.text
         return values
 
+    node_id, coords = _nodes(graph, data)
+    n = len(node_id)
+
+    arcs = _arcs(graph, node_id, data)
+    m = len(arcs)
+
+    lat, lon = ([point[i] for point in coords] for i in (0, 1))
+    tail, head, weight = ([arc[i] for arc in arcs] for i in (0, 1, 2))
+    arrays = (
+        (np.array([n, m], dtype="<u8"),),
+        (np.asarray(lat, dtype="<f8"), np.asarray(lon, dtype="<f8")),
+        (np.asarray(tail, dtype="<u4"), np.asarray(head, dtype="<u4")),
+        (np.asarray(weight, dtype="<f8"),),
+    )
+    return b"".join(array.tobytes() for group in arrays for array in group), n, m
+
+
+def _nodes(graph, data):
     nodes = [element for element in graph if tag(element) == "node"]
     n = len(nodes)
     if n == 0 or n > 0xFFFFFFFF:
@@ -81,7 +99,10 @@ def encode(raw):
         if abs(lat) > 90 or abs(lon) > 180:
             raise ValueError("node coordinates must be geographic degrees")
         coords.append((lat, lon))
+    return node_id, coords
 
+
+def _arcs(graph, node_id, data):
     arcs = []
     for edge in graph:
         if tag(edge) != "edge":
@@ -103,17 +124,7 @@ def encode(raw):
         if not math.isfinite(seconds) or seconds < 0:
             raise ValueError("travel_time_min must be finite and nonnegative")
         arcs.append((u, v, seconds))
-    m = len(arcs)
-
-    lat, lon = ([point[i] for point in coords] for i in (0, 1))
-    tail, head, weight = ([arc[i] for arc in arcs] for i in (0, 1, 2))
-    arrays = (
-        (np.array([n, m], dtype="<u8"),),
-        (np.asarray(lat, dtype="<f8"), np.asarray(lon, dtype="<f8")),
-        (np.asarray(tail, dtype="<u4"), np.asarray(head, dtype="<u4")),
-        (np.asarray(weight, dtype="<f8"),),
-    )
-    return b"".join(array.tobytes() for group in arrays for array in group), n, m
+    return arcs
 
 
 def main():

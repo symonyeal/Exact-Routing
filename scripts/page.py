@@ -62,52 +62,67 @@ def validate_order_experiment(experiment, results, source_sha, producer_sha):
         raise ValueError("query-order experiment city population is invalid")
     expected = {(c, m) for c in ("fixed", "reversed", "precleared") for m in ("dijkstra", "Hypergraph-1024")}
     for item in experiments:
-        graphs = [r for r in results[item["city"]] if r.get("kind") == "graph" and r.get("scale") == 0]
-        if len(graphs) != 1:
-            raise ValueError("query-order city lacks one frozen native graph")
-        if (item.get("scale") != 0 or item.get("bound") != 1024 or item.get("queries") != 1000
-                or item.get("repeats") != 3 or item.get("same_current_query_work") is not True
-                or item.get("source_binary_sha256") != graphs[0].get("binary_sha256")
-                or item.get("source_benchmark_sha") != producer_sha):
-            raise ValueError("query-order experiment settings or source hashes mismatch")
-        rows = item.get("results")
-        if not isinstance(rows, list) or len(rows) != 6:
-            raise ValueError("query-order result population is incomplete")
-        work, seen = {}, set()
-        for row in rows:
-            if not isinstance(row, dict):
-                raise ValueError("query-order result row is invalid")
-            key = (row.get("condition"), row.get("method"))
-            if key not in expected or key in seen:
-                raise ValueError("query-order condition/method population is invalid")
-            seen.add(key)
-            if row.get("wrong") != 0:
-                raise ValueError("query-order diagnostic contains incorrect answers")
-            for field in ("mean_query_us", "mean_preparation_us"):
-                if not _finite(row.get(field)):
-                    raise ValueError("query-order timing metric is invalid")
-            groups = row.get("groups")
-            if (not isinstance(groups, list) or len(groups) != 3
-                    or {g.get("category"): g.get("count") for g in groups if isinstance(g, dict)}
-                    != {"walk8": 250, "walk32": 250, "uniform": 500}):
-                raise ValueError("query-order group population is invalid")
-            if any(not _finite(v) for g in groups for k, v in g.items() if k != "category"):
-                raise ValueError("query-order group metric is invalid")
-            for field in ("per_query_mean_us", "per_query_preparation_us", "per_query_previous_touched", "per_query_work"):
-                values = row.get(field)
-                if not isinstance(values, list) or len(values) != 1000:
-                    raise ValueError("query-order per-query population is invalid")
-                if field == "per_query_work":
-                    if any(not isinstance(p, list) or len(p) != 2
-                           or any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in p) for p in values):
-                        raise ValueError("query-order work counters are invalid")
-                elif not all(_finite(v) for v in values):
-                    raise ValueError("query-order per-query metric is invalid")
-            if work.setdefault(key[1], row["per_query_work"]) != row["per_query_work"]:
-                raise ValueError("query-order work counters differ across conditions")
-        if seen != expected:
-            raise ValueError("query-order condition/method population is incomplete")
+        _order_city(item, results, producer_sha)
+        _order_rows(item.get("results"), expected)
     return experiment
+
+
+def _order_city(item, results, producer_sha):
+    graphs = [r for r in results[item["city"]] if r.get("kind") == "graph" and r.get("scale") == 0]
+    if len(graphs) != 1:
+        raise ValueError("query-order city lacks one frozen native graph")
+    if (item.get("scale") != 0 or item.get("bound") != 1024 or item.get("queries") != 1000
+            or item.get("repeats") != 3 or item.get("same_current_query_work") is not True
+            or item.get("source_binary_sha256") != graphs[0].get("binary_sha256")
+            or item.get("source_benchmark_sha") != producer_sha):
+        raise ValueError("query-order experiment settings or source hashes mismatch")
+
+
+def _order_groups(row):
+    groups = row.get("groups")
+    if (not isinstance(groups, list) or len(groups) != 3
+            or {g.get("category"): g.get("count") for g in groups if isinstance(g, dict)}
+            != {"walk8": 250, "walk32": 250, "uniform": 500}):
+        raise ValueError("query-order group population is invalid")
+    if any(not _finite(v) for g in groups for k, v in g.items() if k != "category"):
+        raise ValueError("query-order group metric is invalid")
+
+
+def _order_samples(row):
+    for field in ("per_query_mean_us", "per_query_preparation_us", "per_query_previous_touched", "per_query_work"):
+        values = row.get(field)
+        if not isinstance(values, list) or len(values) != 1000:
+            raise ValueError("query-order per-query population is invalid")
+        if field == "per_query_work":
+            if any(not isinstance(p, list) or len(p) != 2
+                   or any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in p) for p in values):
+                raise ValueError("query-order work counters are invalid")
+        elif not all(_finite(v) for v in values):
+            raise ValueError("query-order per-query metric is invalid")
+
+
+def _order_rows(rows, expected):
+    if not isinstance(rows, list) or len(rows) != 6:
+        raise ValueError("query-order result population is incomplete")
+    work, seen = {}, set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("query-order result row is invalid")
+        key = (row.get("condition"), row.get("method"))
+        if key not in expected or key in seen:
+            raise ValueError("query-order condition/method population is invalid")
+        seen.add(key)
+        if row.get("wrong") != 0:
+            raise ValueError("query-order diagnostic contains incorrect answers")
+        for field in ("mean_query_us", "mean_preparation_us"):
+            if not _finite(row.get(field)):
+                raise ValueError("query-order timing metric is invalid")
+        _order_groups(row)
+        _order_samples(row)
+        if work.setdefault(key[1], row["per_query_work"]) != row["per_query_work"]:
+            raise ValueError("query-order work counters differ across conditions")
+    if seen != expected:
+        raise ValueError("query-order condition/method population is incomplete")
 
 
 def _finite(v):

@@ -27,34 +27,8 @@ def positive(value, label):
 
 def validate(records, city, query_count=None, repeats=None, threads=None):
     """Validate exact graph, build, latency, and throughput populations for one city."""
-    if not records:
-        raise ValueError("result is empty")
-    def finite(value):
-        if isinstance(value, float):
-            return math.isfinite(value)
-        if isinstance(value, str):
-            return bool(value.strip())
-        if isinstance(value, dict):
-            return all(finite(v) for v in value.values())
-        if isinstance(value, list):
-            return all(finite(v) for v in value)
-        return True
-    if any(not finite(row) for row in records):
-        raise ValueError("result contains an empty string or non-finite value")
-    if any(row.get("city") != city or row.get("scale") not in (0, 1000) for row in records):
-        raise ValueError("unexpected city or scale")
-    if len([r for r in records if r["kind"] == "graph"]) != 2:
-        raise ValueError("expected one graph row per scale")
-    if query_count is None:
-        query_count = records[0].get("queries")
-    if repeats is None:
-        repeats = records[0].get("repeats")
-    if threads is None:
-        threads = records[0].get("threads")
-    for value, label in ((query_count, "queries"), (repeats, "repeats"), (threads, "threads")):
-        positive(value, label)
-    if not all(isinstance(value, int) for value in (query_count, repeats, threads)):
-        raise ValueError("queries, repeats, and threads must be integers")
+    _validate_city_records(records, city)
+    query_count, repeats, threads = _workload(records[0], query_count, repeats, threads)
 
     methods = {"dijkstra", "bidirectional"} | {f"{model}-{u}" for model in ("Graph", "Hypergraph") for u in BOUNDS}
     builds, latencies, throughputs = {}, {}, {}
@@ -63,100 +37,168 @@ def validate(records, city, query_count=None, repeats=None, threads=None):
         kind, scale = row["kind"], row["scale"]
         if kind == "graph":
             graphs[scale].append(row)
-            if row.get("certified_trees") != 3 or row.get("queries") != query_count or row.get("repeats") != repeats or row.get("threads") != threads:
-                raise ValueError("invalid graph certification or workload")
-            expected_metric = "native seconds" if scale == 0 else "max(1, round(scale * seconds))"
-            if row.get("metric") != expected_metric:
-                raise ValueError("unexpected graph weight scale")
-            if row.get("certified_queries") != query_count:
-                raise ValueError("invalid certified query population")
-            positive(row.get("nodes"), "graph nodes")
-            positive(row.get("arcs"), "graph arcs")
-            for key in ("reverse_s",):
-                positive(row.get(key), key)
-            source = row.get("source")
-            if (not isinstance(source, dict) or source.get("output_sha256") != row.get("binary_sha256")
-                    or not isinstance(row.get("binary_sha256"), str)
-                    or not re.fullmatch(r"[0-9a-f]{64}", row["binary_sha256"])):
-                raise ValueError("source binary hash mismatch")
-            if (source.get("weight_units", source.get("native_units")) != "seconds"
-                    or source.get("node_count") != row.get("nodes")
-                    or not isinstance(source.get("arc_count"), int) or source["arc_count"] < row["arcs"]):
-                raise ValueError("source units or node count do not match graph")
-            if city in CITIES - {"london-large", "new_york-large", "tokyo-large"}:
-                expected_source = ("CAMUS-LAB/data-road_network_eta", KOREA_REVISION, city)
-                actual_source = (source.get("dataset"), source.get("revision"), source.get("region"))
-            else:
-                base_city = city.removesuffix("-large")
-                expected_source = ("https://huggingface.co/datasets/HBNU-NLP/InstructOSM", WORLD_REVISION, base_city, "large")
-                actual_source = (source.get("dataset"), source.get("revision"), source.get("city"), source.get("scale"))
-            if actual_source != expected_source:
-                raise ValueError("source city or pinned dataset revision mismatch")
-            machine = row.get("machine")
-            if not isinstance(machine, dict) or any(not isinstance(machine.get(k), str) or not machine[k]
-                                                     for k in ("cpu", "os", "compiler", "git_sha", "rustflags")):
-                raise ValueError("missing machine provenance")
-            for key in ("os_cpu_count", "ram_bytes"):
-                if machine.get(key) is not None:
-                    positive(machine[key], key)
-            if not isinstance(machine.get("git_dirty"), bool):
-                raise ValueError("missing git dirty state")
-            pairs, reference = row.get("pairs"), row.get("reference")
-            if not isinstance(pairs, list) or len(pairs) != query_count or not isinstance(reference, list) or len(reference) != query_count:
-                raise ValueError("invalid certified query details")
-            for pair, answer in zip(pairs, reference):
-                if (not isinstance(pair, list) or len(pair) != 2
-                        or any(not isinstance(v, int) or not 0 <= v < row["nodes"] for v in pair)):
-                    raise ValueError("invalid certified query endpoints")
-                if answer is not None and (not isinstance(answer, (int, float)) or not math.isfinite(answer) or answer < 0):
-                    raise ValueError("invalid certified query reference")
+            _validate_graph(row, city, query_count, repeats, threads, scale)
         elif kind == "build":
             key = (scale, row.get("method"))
             if key in builds:
                 raise ValueError("duplicate build row")
             builds[key] = row
-            positive(row.get("serial_s"), "serial build seconds")
-            if row.get("method") != "fast_paths-CH":
-                positive(row.get("parallel_s"), "parallel build seconds")
-                for key in ("serial_trials_s", "parallel_trials_s"):
-                    trials = row.get(key)
-                    if not isinstance(trials, list) or len(trials) != repeats:
-                        raise ValueError("invalid overlay build trial population")
-                    for seconds in trials:
-                        positive(seconds, key)
-            if row.get("method") != "fast_paths-CH" and (row.get("wrong") != 0 or row.get("parity_queries") != query_count):
-                raise ValueError("invalid overlay build correctness")
+            _validate_build(row, repeats, query_count)
         elif kind == "latency":
             key = (scale, row.get("method"))
             if key in latencies:
                 raise ValueError("duplicate latency row")
             latencies[key] = row
-            if row.get("queries") != query_count or row.get("repeats") != repeats or row.get("wrong") != 0:
-                raise ValueError("invalid latency correctness or workload")
-            for metric in ("mean_us", "p50_us", "p95_us"):
-                positive(row.get(metric), metric)
-            if scale == 1000:
-                positive(row.get("paired_ratio_to_ch"), "paired ratio to CH")
-            trials = row.get("trial_mean_us")
-            if not isinstance(trials, list) or len(trials) != repeats:
-                raise ValueError("invalid latency trial population")
-            for value in trials:
-                positive(value, "latency trial mean")
+            _validate_latency(row, scale, repeats, query_count)
         elif kind == "throughput":
             key = (scale, row.get("method"), row.get("threads"))
             if key in throughputs:
                 raise ValueError("duplicate throughput row")
             throughputs[key] = row
-            if row.get("queries") != query_count or row.get("repeats") != repeats or row.get("wrong") != 0:
-                raise ValueError("invalid throughput correctness or workload")
-            positive(row.get("median_qps"), "median qps")
-            if len(row.get("trial_seconds", [])) != repeats:
-                raise ValueError("invalid throughput trial population")
-            for seconds in row["trial_seconds"]:
-                positive(seconds, "throughput trial seconds")
+            _validate_throughput(row, repeats, query_count)
         else:
             raise ValueError(f"unknown result kind {kind!r}")
 
+    _validate_populations(graphs, builds, latencies, throughputs, methods, query_count, repeats, threads)
+    return records
+
+
+def _validate_city_records(records, city):
+    if not records:
+        raise ValueError("result is empty")
+    if any(not _finite_record(row) for row in records):
+        raise ValueError("result contains an empty string or non-finite value")
+    if any(row.get("city") != city or row.get("scale") not in (0, 1000) for row in records):
+        raise ValueError("unexpected city or scale")
+    if len([r for r in records if r["kind"] == "graph"]) != 2:
+        raise ValueError("expected one graph row per scale")
+
+
+def _workload(first, query_count, repeats, threads):
+    if query_count is None:
+        query_count = first.get("queries")
+    if repeats is None:
+        repeats = first.get("repeats")
+    if threads is None:
+        threads = first.get("threads")
+    for value, label in ((query_count, "queries"), (repeats, "repeats"), (threads, "threads")):
+        positive(value, label)
+    if not all(isinstance(value, int) for value in (query_count, repeats, threads)):
+        raise ValueError("queries, repeats, and threads must be integers")
+    return query_count, repeats, threads
+
+
+def _finite_record(value):
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        return all(_finite_record(v) for v in value.values())
+    if isinstance(value, list):
+        return all(_finite_record(v) for v in value)
+    return True
+
+def _validate_graph(row, city, query_count, repeats, threads, scale):
+    if row.get("certified_trees") != 3 or row.get("queries") != query_count or row.get("repeats") != repeats or row.get("threads") != threads:
+        raise ValueError("invalid graph certification or workload")
+    expected_metric = "native seconds" if scale == 0 else "max(1, round(scale * seconds))"
+    if row.get("metric") != expected_metric:
+        raise ValueError("unexpected graph weight scale")
+    if row.get("certified_queries") != query_count:
+        raise ValueError("invalid certified query population")
+    positive(row.get("nodes"), "graph nodes")
+    positive(row.get("arcs"), "graph arcs")
+    for key in ("reverse_s",):
+        positive(row.get(key), key)
+    _validate_source(row, city)
+    _validate_machine(row.get("machine"))
+    _validate_query_details(row, query_count)
+
+
+def _validate_source(row, city):
+    source = row.get("source")
+    if (not isinstance(source, dict) or source.get("output_sha256") != row.get("binary_sha256")
+            or not isinstance(row.get("binary_sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", row["binary_sha256"])):
+        raise ValueError("source binary hash mismatch")
+    if (source.get("weight_units", source.get("native_units")) != "seconds"
+            or source.get("node_count") != row.get("nodes")
+            or not isinstance(source.get("arc_count"), int) or source["arc_count"] < row["arcs"]):
+        raise ValueError("source units or node count do not match graph")
+    if city in CITIES - {"london-large", "new_york-large", "tokyo-large"}:
+        expected_source = ("CAMUS-LAB/data-road_network_eta", KOREA_REVISION, city)
+        actual_source = (source.get("dataset"), source.get("revision"), source.get("region"))
+    else:
+        base_city = city.removesuffix("-large")
+        expected_source = ("https://huggingface.co/datasets/HBNU-NLP/InstructOSM", WORLD_REVISION, base_city, "large")
+        actual_source = (source.get("dataset"), source.get("revision"), source.get("city"), source.get("scale"))
+    if actual_source != expected_source:
+        raise ValueError("source city or pinned dataset revision mismatch")
+
+
+def _validate_machine(machine):
+    if not isinstance(machine, dict) or any(not isinstance(machine.get(k), str) or not machine[k]
+                                             for k in ("cpu", "os", "compiler", "git_sha", "rustflags")):
+        raise ValueError("missing machine provenance")
+    for key in ("os_cpu_count", "ram_bytes"):
+        if machine.get(key) is not None:
+            positive(machine[key], key)
+    if not isinstance(machine.get("git_dirty"), bool):
+        raise ValueError("missing git dirty state")
+
+
+def _validate_query_details(row, query_count):
+    pairs, reference = row.get("pairs"), row.get("reference")
+    if not isinstance(pairs, list) or len(pairs) != query_count or not isinstance(reference, list) or len(reference) != query_count:
+        raise ValueError("invalid certified query details")
+    for pair, answer in zip(pairs, reference):
+        if (not isinstance(pair, list) or len(pair) != 2
+                or any(not isinstance(v, int) or not 0 <= v < row["nodes"] for v in pair)):
+            raise ValueError("invalid certified query endpoints")
+        if answer is not None and (not isinstance(answer, (int, float)) or not math.isfinite(answer) or answer < 0):
+            raise ValueError("invalid certified query reference")
+
+
+def _validate_build(row, repeats, query_count):
+    positive(row.get("serial_s"), "serial build seconds")
+    if row.get("method") != "fast_paths-CH":
+        positive(row.get("parallel_s"), "parallel build seconds")
+        for key in ("serial_trials_s", "parallel_trials_s"):
+            trials = row.get(key)
+            if not isinstance(trials, list) or len(trials) != repeats:
+                raise ValueError("invalid overlay build trial population")
+            for seconds in trials:
+                positive(seconds, key)
+    if row.get("method") != "fast_paths-CH" and (row.get("wrong") != 0 or row.get("parity_queries") != query_count):
+        raise ValueError("invalid overlay build correctness")
+
+
+def _validate_latency(row, scale, repeats, query_count):
+    if row.get("queries") != query_count or row.get("repeats") != repeats or row.get("wrong") != 0:
+        raise ValueError("invalid latency correctness or workload")
+    for metric in ("mean_us", "p50_us", "p95_us"):
+        positive(row.get(metric), metric)
+    if scale == 1000:
+        positive(row.get("paired_ratio_to_ch"), "paired ratio to CH")
+    trials = row.get("trial_mean_us")
+    if not isinstance(trials, list) or len(trials) != repeats:
+        raise ValueError("invalid latency trial population")
+    for value in trials:
+        positive(value, "latency trial mean")
+
+
+def _validate_throughput(row, repeats, query_count):
+    if row.get("queries") != query_count or row.get("repeats") != repeats or row.get("wrong") != 0:
+        raise ValueError("invalid throughput correctness or workload")
+    positive(row.get("median_qps"), "median qps")
+    if len(row.get("trial_seconds", [])) != repeats:
+        raise ValueError("invalid throughput trial population")
+    for seconds in row["trial_seconds"]:
+        positive(seconds, "throughput trial seconds")
+
+
+def _validate_populations(graphs, builds, latencies, throughputs, methods, query_count, repeats, threads):
     if any(len(rows) != 1 for rows in graphs.values()):
         raise ValueError("expected one graph row per scale")
     if graphs[0][0]["pairs"] != graphs[1000][0]["pairs"]:
@@ -173,21 +215,26 @@ def validate(records, city, query_count=None, repeats=None, threads=None):
         if {m for s, m, _ in throughputs if s == scale} != expected_methods:
             raise ValueError("missing or extra throughput methods")
         for method in expected_methods:
-            latency = latencies[scale, method]
-            if method in expected_builds:
-                build = builds[scale, method]
-                if method != "fast_paths-CH" and build.get("parity_queries") != query_count:
-                    raise ValueError("overlay build parity population mismatch")
-            if method == "fast_paths-CH" and scale != 1000:
-                raise ValueError("CH is only expected at scaled weights")
-            if latency.get("queries") != query_count or latency.get("repeats") != repeats:
-                raise ValueError("latency population mismatch")
-            expected_workers = {1, threads}
-            if threads == 1:
-                expected_workers = {1}
-            if {w for s, m, w in throughputs if s == scale and m == method} != expected_workers:
-                raise ValueError("missing or extra throughput thread counts")
-    return records
+            _validate_method_workers(scale, method, expected_builds, builds, latencies, throughputs,
+                                     query_count, repeats, threads)
+
+
+def _validate_method_workers(scale, method, expected_builds, builds, latencies, throughputs,
+                             query_count, repeats, threads):
+    latency = latencies[scale, method]
+    if method in expected_builds:
+        build = builds[scale, method]
+        if method != "fast_paths-CH" and build.get("parity_queries") != query_count:
+            raise ValueError("overlay build parity population mismatch")
+    if method == "fast_paths-CH" and scale != 1000:
+        raise ValueError("CH is only expected at scaled weights")
+    if latency.get("queries") != query_count or latency.get("repeats") != repeats:
+        raise ValueError("latency population mismatch")
+    expected_workers = {1, threads}
+    if threads == 1:
+        expected_workers = {1}
+    if {w for s, m, w in throughputs if s == scale and m == method} != expected_workers:
+        raise ValueError("missing or extra throughput thread counts")
 
 
 def command_run(args):
@@ -305,24 +352,41 @@ def report_text(results):
              "All adapters return distances. CH internally reconstructs a path through its public API; that extra work is included. These are implementation timings, not isolated search kernels or equivalent path-output timings.", "",
              "Calls include clearing the previous query's touched state. The original query order is fixed (8-arc walk, 32-arc walk, uniform, uniform), so group timings include that preceding-query context. The [controlled query-order diagnostic](insights.md) exposes this carryover; these historical numbers remain unchanged and describe that workload.", "",
              "## Native weights", "", "| City | Nodes | Method | Mean µs | p50 µs | p95 µs |", "|---|---:|---|---:|---:|---:|"]
+    lines.extend(_latency_rows(results, methods, 0))
+    lines.extend(["", "## Rounded weights", "", "| City | Nodes | Method | Mean µs | p50 µs | p95 µs |", "|---|---:|---|---:|---:|---:|"])
+    rounded_methods = methods + ["fast_paths-CH"]
+    lines.extend(_latency_rows(results, rounded_methods, 1000))
+    lines.extend(["", "## Best-method comparison", "", "Rankings use p50. Dijkstra ratios divide Dijkstra p50 by the fastest method p50 at the same scale. H/CH uses the selected best-p50 hypergraph method's paired median of per-query mean-latency ratios.",
+                  "| City | Native fastest | Native Dijkstra / best | Rounded fastest | Rounded Dijkstra / best | Rounded paired H / CH |", "|---|---|---:|---|---:|---:|"])
+    lines.extend(_comparison_rows(results))
+    lines.extend(["", "## Throughput scaling", "", "Queries per second; each throughput sample includes worker launch and join time but excludes worker-state allocation. Ratios are descriptive; losses remain visible.",
+                  "| City | Metric | Method | 1 worker QPS | Requested workers QPS | Parallel / serial |", "|---|---|---|---:|---:|---:|"])
+    lines.extend(_throughput_rows(results, methods))
+    lines.extend(["", "## Preprocessing", "", "Each overlay total sums median build times across six study configurations for one metric. Deployment builds only its chosen configuration; individual times remain in JSONL. Parallelism covers cell customization; partitioning is serial. CH is one separate rounded-metric build. Ratios are descriptive; regressions below 1 remain visible.",
+                  "| City | Metric | Overlay study serial s | With parallel customization s | Serial / parallel | CH build s |", "|---|---|---:|---:|---:|---:|"])
+    lines.extend(_preprocessing_rows(results))
+    lines.extend(["", "## Correctness population", "", f"Each city and weight scale: {query_count:,} individually certified query distances; 3 certified full trees. Latency and throughput rows report zero wrong answers; overlay build rows checked parity on all {query_count:,} queries.",
+                  "", "## Machine and build provenance", "", f"Queries {query_count:,}; repeats {repeats}; threads {threads}; seed {seed}; git {git_sha}; RUSTFLAGS `{rustflags}`.",
+                  "Comparisons are within each city job. CPU models vary across jobs, so absolute latency differences across cities also reflect different hardware.",
+                  "", "| City | CPU | OS | Rust compiler | Logical CPUs | RAM bytes |", "|---|---|---|---|---:|---:|"])
+    lines.extend(_machine_rows(results))
+    return "\n".join(lines) + "\n"
+
+
+def _latency_rows(results, methods, scale):
+    lines = []
     for city in sorted(CITIES):
         records = results[city]
-        nodes = next(r["nodes"] for r in records if r["kind"] == "graph" and r["scale"] == 0)
-        rows = {r["method"]: r for r in records if r["kind"] == "latency" and r["scale"] == 0}
+        nodes = next(r["nodes"] for r in records if r["kind"] == "graph" and r["scale"] == scale)
+        rows = {r["method"]: r for r in records if r["kind"] == "latency" and r["scale"] == scale}
         for method in methods:
             row = rows[method]
             lines.append(f"| {city} | {nodes:,} | {method} | {row['mean_us']:.2f} | {row['p50_us']:.2f} | {row['p95_us']:.2f} |")
-    lines.extend(["", "## Rounded weights", "", "| City | Nodes | Method | Mean µs | p50 µs | p95 µs |", "|---|---:|---|---:|---:|---:|"])
-    rounded_methods = methods + ["fast_paths-CH"]
-    for city in sorted(CITIES):
-        records = results[city]
-        nodes = next(r["nodes"] for r in records if r["kind"] == "graph" and r["scale"] == 1000)
-        rows = {r["method"]: r for r in records if r["kind"] == "latency" and r["scale"] == 1000}
-        for method in rounded_methods:
-            row = rows[method]
-            lines.append(f"| {city} | {nodes:,} | {method} | {row['mean_us']:.2f} | {row['p50_us']:.2f} | {row['p95_us']:.2f} |")
-    lines.extend(["", "## Best-method comparison", "", "Rankings use p50. Dijkstra ratios divide Dijkstra p50 by the fastest method p50 at the same scale. H/CH uses the selected best-p50 hypergraph method's paired median of per-query mean-latency ratios.",
-                  "| City | Native fastest | Native Dijkstra / best | Rounded fastest | Rounded Dijkstra / best | Rounded paired H / CH |", "|---|---|---:|---|---:|---:|"])
+    return lines
+
+
+def _comparison_rows(results):
+    lines = []
     for city in sorted(CITIES):
         records = results[city]
         native = {r["method"]: r["p50_us"] for r in records if r["kind"] == "latency" and r["scale"] == 0}
@@ -333,8 +397,11 @@ def report_text(results):
         paired_hyper_ch = next(r["paired_ratio_to_ch"] for r in results[city]
                                if r["kind"] == "latency" and r["scale"] == 1000 and r["method"] == best_hyper_method)
         lines.append(f"| {city} | {native_best_method} | {native['dijkstra']/native_best:.2f}x | {rounded_best_method} | {rounded['dijkstra']/rounded_best:.2f}x | {paired_hyper_ch:.2f}x |")
-    lines.extend(["", "## Throughput scaling", "", "Queries per second; each throughput sample includes worker launch and join time but excludes worker-state allocation. Ratios are descriptive; losses remain visible.",
-                  "| City | Metric | Method | 1 worker QPS | Requested workers QPS | Parallel / serial |", "|---|---|---|---:|---:|---:|"])
+    return lines
+
+
+def _throughput_rows(results, methods):
+    lines = []
     for city in sorted(CITIES):
         records = results[city]
         q = next(r["threads"] for r in records if r["kind"] == "graph" and r["scale"] == 0)
@@ -344,8 +411,11 @@ def report_text(results):
                 serial = rows[method, 1]["median_qps"]
                 parallel = rows[method, q]["median_qps"]
                 lines.append(f"| {city} | {label} | {method} | {serial:.1f} | {parallel:.1f} | {parallel/serial:.2f}× |")
-    lines.extend(["", "## Preprocessing", "", "Each overlay total sums median build times across six study configurations for one metric. Deployment builds only its chosen configuration; individual times remain in JSONL. Parallelism covers cell customization; partitioning is serial. CH is one separate rounded-metric build. Ratios are descriptive; regressions below 1 remain visible.",
-                  "| City | Metric | Overlay study serial s | With parallel customization s | Serial / parallel | CH build s |", "|---|---|---:|---:|---:|---:|"])
+    return lines
+
+
+def _preprocessing_rows(results):
+    lines = []
     for city in sorted(CITIES):
         records = results[city]
         for scale, label in [(0, "native"), (1000, "rounded")]:
@@ -354,14 +424,15 @@ def report_text(results):
             parallel = sum(r["parallel_s"] for r in builds)
             ch = f"{next(r['serial_s'] for r in records if r['kind'] == 'build' and r['method'] == 'fast_paths-CH'):.2f}" if scale else "n/a"
             lines.append(f"| {city} | {label} | {serial:.2f} | {parallel:.2f} | {serial/parallel:.3f}× | {ch} |")
-    lines.extend(["", "## Correctness population", "", f"Each city and weight scale: {query_count:,} individually certified query distances; 3 certified full trees. Latency and throughput rows report zero wrong answers; overlay build rows checked parity on all {query_count:,} queries.",
-                  "", "## Machine and build provenance", "", f"Queries {query_count:,}; repeats {repeats}; threads {threads}; seed {seed}; git {git_sha}; RUSTFLAGS `{rustflags}`.",
-                  "Comparisons are within each city job. CPU models vary across jobs, so absolute latency differences across cities also reflect different hardware.",
-                  "", "| City | CPU | OS | Rust compiler | Logical CPUs | RAM bytes |", "|---|---|---|---|---:|---:|"])
+    return lines
+
+
+def _machine_rows(results):
+    lines = []
     for city in sorted(CITIES):
         machine = next(r["machine"] for r in results[city] if r["kind"] == "graph" and r["scale"] == 0)
         lines.append(f"| {city} | {machine['cpu']} | {machine['os']} | {machine['compiler'].replace(chr(10), '<br>')} | {machine['os_cpu_count'] or 'n/a'} | {machine['ram_bytes'] or 'n/a'} |")
-    return "\n".join(lines) + "\n"
+    return lines
 
 
 def command_report(args):

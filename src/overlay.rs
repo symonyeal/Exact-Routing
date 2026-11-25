@@ -101,6 +101,75 @@ pub fn build_parallel(
 ) -> Overlay {
     let n = g.n;
     assert!(u >= 2 && xy.len() == n && threads > 0);
+    let Partition {
+        cell,
+        home,
+        members,
+    } = partition(g, xy, u, model);
+    let cells = members.len();
+    let on = |v: usize| home[v] == NONE;
+    let work = |lo: usize, cells: &[Vec<u32>]| {
+        let mut over = Vec::new();
+        let mut search = Search::new(n);
+        for (i, b) in cells.iter().enumerate() {
+            for &x in b {
+                search.run(g, x as usize, None, |a| cell[a] == (lo + i) as u32, None);
+                over.extend(
+                    b.iter()
+                        .filter(|&&y| y != x && search.d[y as usize] < f64::INFINITY)
+                        .map(|&y| (x, y, search.d[y as usize])),
+                );
+            }
+        }
+        over
+    };
+    let mut over = if threads == 1 || members.is_empty() {
+        work(0, &members)
+    } else {
+        let chunk = members.len().div_ceil(threads).max(1);
+        std::thread::scope(|scope| {
+            let jobs: Vec<_> = members
+                .chunks(chunk)
+                .enumerate()
+                .map(|(i, b)| {
+                    let work = &work;
+                    scope.spawn(move || work(i * chunk, b))
+                })
+                .collect();
+            jobs.into_iter()
+                .flat_map(|job| job.join().unwrap())
+                .collect()
+        })
+    };
+    for x in 0..n {
+        let r = g.off[x]..g.off[x + 1];
+        let arcs = cell[r.clone()].iter().zip(&g.head[r.clone()]).zip(&g.w[r]);
+        over.extend(
+            arcs.filter(|a| *a.0.0 == NONE)
+                .map(|((_, &y), &w)| (x as u32, y, w)),
+        );
+    }
+    let boundary = (0..n).filter(|&v| on(v)).count();
+    let o = Graph::new(n, over);
+    Overlay {
+        cell,
+        home,
+        off: o.off,
+        head: o.head,
+        w: o.w,
+        cells,
+        boundary,
+    }
+}
+
+struct Partition {
+    cell: Vec<u32>,
+    home: Vec<u32>,
+    members: Vec<Vec<u32>>,
+}
+
+fn partition(g: &Graph, xy: &[(f64, f64)], u: usize, model: Model) -> Partition {
+    let n = g.n;
     // Undirected edges and, for each arc, its edge.
     let mut keys: Vec<(u32, u32, usize)> = (0..n)
         .flat_map(|x| (g.off[x]..g.off[x + 1]).map(move |a| (x as u32, a)))
@@ -155,57 +224,10 @@ pub fn build_parallel(
         b.sort_unstable();
         b.dedup();
     }
-    let work = |lo: usize, cells: &[Vec<u32>]| {
-        let mut over = Vec::new();
-        let mut search = Search::new(n);
-        for (i, b) in cells.iter().enumerate() {
-            for &x in b {
-                search.run(g, x as usize, None, |a| cell[a] == (lo + i) as u32, None);
-                over.extend(
-                    b.iter()
-                        .filter(|&&y| y != x && search.d[y as usize] < f64::INFINITY)
-                        .map(|&y| (x, y, search.d[y as usize])),
-                );
-            }
-        }
-        over
-    };
-    let mut over = if threads == 1 || members.is_empty() {
-        work(0, &members)
-    } else {
-        let chunk = members.len().div_ceil(threads).max(1);
-        std::thread::scope(|scope| {
-            let jobs: Vec<_> = members
-                .chunks(chunk)
-                .enumerate()
-                .map(|(i, b)| {
-                    let work = &work;
-                    scope.spawn(move || work(i * chunk, b))
-                })
-                .collect();
-            jobs.into_iter()
-                .flat_map(|job| job.join().unwrap())
-                .collect()
-        })
-    };
-    for x in 0..n {
-        let r = g.off[x]..g.off[x + 1];
-        let arcs = cell[r.clone()].iter().zip(&g.head[r.clone()]).zip(&g.w[r]);
-        over.extend(
-            arcs.filter(|a| *a.0.0 == NONE)
-                .map(|((_, &y), &w)| (x as u32, y, w)),
-        );
-    }
-    let boundary = (0..n).filter(|&v| on(v)).count();
-    let o = Graph::new(n, over);
-    Overlay {
+    Partition {
         cell,
         home,
-        off: o.off,
-        head: o.head,
-        w: o.w,
-        cells: cells as usize,
-        boundary,
+        members,
     }
 }
 
@@ -334,30 +356,7 @@ fn cut(
         cursor.fill(0);
         // Iterative level-graph DFS avoids a call stack proportional to road-network diameter.
         loop {
-            path.clear();
-            let mut x = src;
-            while x != snk {
-                while cursor[x] < adj[x].len() {
-                    let i = adj[x][cursor[x]];
-                    if cap[i] > 0 && level[to[i]] == level[x] + 1 {
-                        break;
-                    }
-                    cursor[x] += 1;
-                }
-                if cursor[x] == adj[x].len() {
-                    if let Some(i) = path.pop() {
-                        x = to[i ^ 1];
-                        cursor[x] += 1;
-                    } else {
-                        break;
-                    }
-                } else {
-                    let i = adj[x][cursor[x]];
-                    path.push(i);
-                    x = to[i];
-                }
-            }
-            if x != snk {
+            if !flow_path(src, snk, (&adj, &to, &cap), &level, &mut cursor, &mut path) {
                 break;
             }
             let b = path.iter().map(|&i| cap[i]).min().unwrap();
@@ -380,6 +379,42 @@ fn cut(
         })
         .collect();
     (flow, side)
+}
+
+/// Find one path in the current level graph, retaining the per-node cursors.
+fn flow_path(
+    src: usize,
+    snk: usize,
+    network: (&[Vec<usize>], &[usize], &[i64]),
+    level: &[usize],
+    cursor: &mut [usize],
+    path: &mut Vec<usize>,
+) -> bool {
+    let (adj, to, cap) = network;
+    path.clear();
+    let mut x = src;
+    while x != snk {
+        while cursor[x] < adj[x].len() {
+            let i = adj[x][cursor[x]];
+            if cap[i] > 0 && level[to[i]] == level[x] + 1 {
+                break;
+            }
+            cursor[x] += 1;
+        }
+        if cursor[x] == adj[x].len() {
+            if let Some(i) = path.pop() {
+                x = to[i ^ 1];
+                cursor[x] += 1;
+            } else {
+                break;
+            }
+        } else {
+            let i = adj[x][cursor[x]];
+            path.push(i);
+            x = to[i];
+        }
+    }
+    x == snk
 }
 
 /// Dijkstra with reusable buffers, restricted to the arcs `allowed` admits plus optional overlay
