@@ -33,9 +33,8 @@
 use fast_paths::PathCalculator;
 use route::cch::{Cch, Metric, Perfect};
 use route::ch::Ch;
-use route::graph::{Graph, check, dijkstra};
+use route::graph::{Graph, Search, check, dijkstra};
 use route::levels::{Multi, Nest, Query, nest};
-use route::overlay::{Model, Overlay, Partition, Search, customize, partition};
 use route::query::BiSearch;
 use route::road::{Road, metrics, mix, pairs, shuffle};
 use serde_json::{Value, json};
@@ -45,11 +44,9 @@ use std::{env, fs, thread};
 
 const SCALE: usize = 1000;
 const SLOTS: usize = 8;
-const ENGINES: [&str; 12] = [
+const ENGINES: [&str; 10] = [
     "dijkstra",
     "bidirectional",
-    "overlay-1024",
-    "overlay-4096",
     "fast_paths-CH",
     "fast_paths-CH-fixed-order",
     "CCH",
@@ -59,7 +56,6 @@ const ENGINES: [&str; 12] = [
     "overlay-1024-32768",
     "overlay-256-4096-65536",
 ];
-const BOUNDS: [usize; 2] = [1024, 4096];
 const NESTS: [&[usize]; 2] = [&[1024, 32768], &[256, 4096, 65536]];
 /// Synthetic changed-arc fractions.
 const F: [f64; 5] = [0.001, 0.01, 0.1, 0.3, 0.6];
@@ -70,7 +66,6 @@ const CHECK: usize = 10;
 /// Metric-independent preparation of the engines asked for, except the CH order (free flow).
 #[derive(Default)]
 struct Prep {
-    parts: Vec<Option<Partition>>,
     nests: Vec<Option<Nest>>,
     order: Option<Vec<usize>>,
     cch: Option<Cch>,
@@ -79,7 +74,6 @@ struct Prep {
 /// An engine's index for one metric.
 enum Index {
     Plain,
-    Overlay(Overlay),
     Ch(Ch, PathCalculator),
     Cch(Metric),
     Perfect(Perfect, Metric),
@@ -107,37 +101,29 @@ fn prepare(need: impl Fn(usize) -> bool, free: &Graph, xy: &[(f64, f64)]) -> Pre
         println!("{r}");
         eprintln!("prepare {method} {:.1} s", t0.elapsed().as_secs_f64());
     };
-    for (i, &u) in BOUNDS.iter().enumerate() {
-        p.parts.push(need(2 + i).then(|| {
-            let t0 = Instant::now();
-            let x = partition(free, xy, u, Model::Hypergraph);
-            row(ENGINES[2 + i], t0, json!({"metric_independent":true}));
-            x
-        }));
-    }
     for (i, &us) in NESTS.iter().enumerate() {
-        p.nests.push(need(10 + i).then(|| {
+        p.nests.push(need(8 + i).then(|| {
             let t0 = Instant::now();
             let x = nest(free, xy, us);
             let boundary: Vec<usize> = (0..x.levels()).map(|l| x.boundary(l)).collect();
             row(
-                ENGINES[10 + i],
+                ENGINES[8 + i],
                 t0,
                 json!({"metric_independent":true, "boundary":boundary}),
             );
             x
         }));
     }
-    if need(5) {
+    if need(3) {
         let t0 = Instant::now();
         p.order = Some(Ch::new(free).order());
         row(
-            ENGINES[5],
+            ENGINES[3],
             t0,
             json!({"metric_independent":false, "order_metric":0}),
         );
     }
-    if (6..10).any(&need) {
+    if (4..8).any(&need) {
         let t0 = Instant::now();
         let cch = Cch::new(free, xy);
         row(
@@ -164,22 +150,18 @@ fn update(
     match e {
         0 | 1 => (Index::Plain, None, json!({})),
         2 | 3 => {
-            let o = customize(g, p.parts[e - 2].as_ref().unwrap());
-            (Index::Overlay(o), None, json!({}))
-        }
-        4 | 5 => {
             let ch = match &p.order {
-                Some(order) if e == 5 => Ch::with_order(g, order),
+                Some(order) if e == 3 => Ch::with_order(g, order),
                 _ => Ch::new(g),
             };
             let calc = ch.calculator();
             (Index::Ch(ch, calc), None, json!({}))
         }
-        6 | 7 => {
-            let (m, core) = cch().customize(g, if e == 6 { 1 } else { 4 });
+        4 | 5 => {
+            let (m, core) = cch().customize(g, if e == 4 { 1 } else { 4 });
             (Index::Cch(m), Some(core), json!({}))
         }
-        8 => {
+        6 => {
             let mut m = carry.take().unwrap();
             let recomputed = cch().update(&mut m, g, changed);
             let f = changed.len() as f64 / g.weights().len() as f64;
@@ -189,7 +171,7 @@ fn update(
                 json!({"f":f, "changed":changed.len(), "recomputed":recomputed}),
             )
         }
-        9 => {
+        7 => {
             let (m, basic) = cch().customize(g, 1);
             let t0 = Instant::now();
             let x = cch().perfect(&m);
@@ -202,7 +184,7 @@ fn update(
             )
         }
         _ => {
-            let m = route::levels::customize(g, p.nests[e - 10].as_ref().unwrap());
+            let m = route::levels::customize(g, p.nests[e - 8].as_ref().unwrap());
             let arcs = m.arcs();
             (Index::Multi(m), None, json!({"overlay_arcs":arcs}))
         }
@@ -222,9 +204,8 @@ fn answer(
     t: usize,
 ) -> f64 {
     match x {
-        Index::Plain if e == 0 => w.search.run(g, s, Some(t), |_| true, None),
+        Index::Plain if e == 0 => w.search.run(g, s, Some(t), |_| true),
         Index::Plain => w.bi.query(g, r, s, t),
-        Index::Overlay(o) => w.search.query(g, o, s, t),
         Index::Ch(ch, calc) => ch.query(calc, s, t),
         Index::Cch(m) => {
             let ws = w.ws.as_mut().unwrap();
@@ -240,7 +221,7 @@ fn answer(
                 .unwrap()
                 .query_perfect(q, m, ws, s, t, Some(&mut w.path))
         }
-        Index::Multi(m) => w.multi.run(g, p.nests[e - 10].as_ref().unwrap(), m, s, t),
+        Index::Multi(m) => w.multi.run(g, p.nests[e - 8].as_ref().unwrap(), m, s, t),
     }
 }
 
@@ -255,7 +236,7 @@ fn reference(g: &Graph, pairs: &[(usize, usize)], threads: usize) -> Vec<f64> {
                     p.iter()
                         .map(|&(s, t)| {
                             let tree = dijkstra(g, s);
-                            assert!(check(g, s, &tree, false), "uncertified tree from {s}");
+                            assert!(check(g, s, &tree), "uncertified tree from {s}");
                             tree.d[t]
                         })
                         .collect::<Vec<_>>()
@@ -425,7 +406,7 @@ fn time(
             let (gj, rj, d) = (g(j), rs[j].as_ref().unwrap(), refs[j].as_ref().unwrap());
             for e in (0..ENGINES.len()).map(|e| (e + pass + step) % ENGINES.len()) {
                 let mut changed = Vec::new();
-                if e == 8 {
+                if e == 6 {
                     if carry.1.is_none() {
                         carry = (0, Some(cch.customize(g(0), 1).0));
                     }
@@ -449,13 +430,13 @@ fn time(
                         let got = answer(e, &mut x, &p, &mut w, gj, rj, s, t);
                         assert_eq!(got, d[i], "{} {s}->{t} slot {slot}", ENGINES[e]);
                         // The CCH engines return a path with each distance: re-price it.
-                        if (6..10).contains(&e) && got.is_finite() {
+                        if (4..8).contains(&e) && got.is_finite() {
                             let c = priced(gj, &w.path, s, t);
                             assert_eq!(c, got, "{} path {s}->{t}", ENGINES[e]);
                         }
                     }
                 }
-                if let (8, Index::Cch(m)) = (e, x) {
+                if let (6, Index::Cch(m)) = (e, x) {
                     carry = (j, Some(m));
                 }
                 let (u, uw) = if e < 2 {
@@ -471,7 +452,7 @@ fn time(
                 let mut r = json!({"kind":"slot", "method":ENGINES[e], "pass":pass, "slot":slot,
                     "update_s":u, "update_wall_s":uw, "queries":mine.len(), "query_s":seconds,
                     "checked":if e < 2 {mine.len()} else {q}, "wrong":0});
-                if e == 8 {
+                if e == 6 {
                     r["from"] = json!(from);
                 }
                 r.as_object_mut()
@@ -548,7 +529,7 @@ fn partial(road: &[u8], cols: &[u8], xy: &[(f64, f64)], q: usize, threads: usize
         json!({"mode":"partial", "threads":threads, "certified_trees":q * 2 * SLOTS,
         "reference_s":reference_s, "reachable":reachable}),
     );
-    let p = prepare(|e| e == 6, &gs[0], xy);
+    let p = prepare(|e| e == 4, &gs[0], xy);
     let cch = p.cch.as_ref().unwrap();
     let (m, ups) = (gs[0].weights().len(), updates());
     let sets: Vec<Vec<usize>> = ups

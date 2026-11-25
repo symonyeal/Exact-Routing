@@ -1,16 +1,17 @@
-//! Exact shortest paths with optimality certificates.
+//! Exact point-to-point road routing with certified answers.
 //!
-//! `grid`: four-neighbour grid mazes, solved by word-parallel breadth-first search.
-//! `graph`: sparse directed graphs: breadth-first search, Dijkstra and tree certificates.
-//! `overlay`: exact point-to-point queries over cells from a graph or hypergraph partition.
-//! `levels`: the same over nested junction-cut cells on several levels.
-//! `cch`: customizable contraction hierarchies: one weight-free preparation, one customization per metric.
+//! `graph`: sparse directed graphs, Dijkstra and shortest-path-tree certificates.
+//! `query`: bidirectional Dijkstra.
+//! `ch`: the `fast_paths` contraction hierarchy behind a validated adapter.
+//! `cch`: customizable contraction hierarchies: one weight-free preparation, one customization per
+//! metric, serial, threaded, partial or perfect.
+//! `levels`: multilevel overlays over nested junction-cut cells.
+//! `road`: the road binary and its travel-time metrics.
 
 pub mod cch;
 pub mod ch;
 pub mod graph;
-pub mod grid;
 pub mod levels;
-pub mod overlay;
+mod partition;
 pub mod query;
 pub mod road;

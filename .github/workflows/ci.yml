@@ -20,7 +20,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # x86-64 runs the AVX2 grid step; arm64 runs the portable step.
         os: [ubuntu-latest, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@v5
@@ -30,19 +29,13 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --release --all-targets -- -D warnings
       - run: cargo test --release
-      - run: python3 scripts/fetch.py
-      - name: Score Maze-Hard against results/eval.jsonl
-        run: |
-          cargo run --release --bin maze -- data/train.csv data/test.csv > eval.jsonl
-          diff eval.jsonl results/eval.jsonl
 
-  sparse:
-    name: SALSA-CLRS and retained reports (Linux)
+  reports:
+    name: Retained reports and page data (Linux)
     needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -57,24 +50,3 @@ jobs:
         run: |
           python3 scripts/metro.py report results/metro.jsonl --output results/metro.md
           git diff --exit-code -- results/metro.md
-      - run: cargo build --release
-      - name: SALSA-CLRS test sets, every tree certified
-        run: |
-          for algo in bfs dijkstra; do
-            python3 scripts/salsa.py "$algo"
-            target/release/salsa "$algo" data/salsa/"$algo"/*.txt | tee -a "$GITHUB_STEP_SUMMARY"
-          done
-
-  bench:
-    name: Benchmark (Linux)
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - run: python3 scripts/fetch.py
-      - run: cargo bench --bench grid -- data/test.csv | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Peak resident memory of scoring both splits
-        run: |
-          cargo build --release --bin maze
-          /usr/bin/time -v target/release/maze data/train.csv data/test.csv 2>&1 | grep "Maximum resident" | tee -a "$GITHUB_STEP_SUMMARY"

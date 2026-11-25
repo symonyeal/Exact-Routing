@@ -2,11 +2,12 @@
 //! Delling, Goldberg, Pajor and Werneck, Transportation Science 51, 2017) on a nested junction-cut
 //! partition.
 //!
-//! Problem. As in `overlay`, with L nested levels of cells; level 0 is the finest. Recursive
+//! Problem. Answer many s–t distance queries on one road graph. Cells partition the edges; a node
+//! incident to edges of two cells, or to a cut edge, is a boundary node. There are L nested levels
+//! of cells; level 0 is the finest. Recursive
 //! inertial-flow bisection of the edge set under the hypergraph (junction-cut) model, continued
 //! until pieces have at most U₀ nodes, gives every level at once: the level-l cell of a branch is
-//! its first piece with at most U_l nodes. Cells therefore nest, and level l is the partition that
-//! `overlay::partition` produces for U_l.
+//! its first piece with at most U_l nodes, so cells nest.
 //!
 //! Customization, bottom up. The clique of a level-l cell c holds the distances between its
 //! level-l boundary nodes inside c: over its base arcs at level 0, and above that over the cliques
@@ -28,8 +29,8 @@
 //!   own, group  of a level-l overlay arc: its level-l cell (CUT for a cut arc) and the
 //!               level-(l+1) cell containing it
 
-use crate::graph::{Graph, Key};
-use crate::overlay::{Model, Partition, Search, assemble, bisect, endpoints, undirected};
+use crate::graph::{Graph, Key, Search};
+use crate::partition::{Model, Partition, assemble, bisect, endpoints, undirected};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
@@ -102,11 +103,6 @@ impl Nest {
         self.lv.len()
     }
 
-    /// Level-l cell of each base arc in CSR order; `None` marks an arc cut at level l.
-    pub fn arc_cells(&self, l: usize) -> impl Iterator<Item = Option<u32>> + '_ {
-        self.lv[l].cell.iter().map(|&c| (c != NONE).then_some(c))
-    }
-
     /// Level-l boundary nodes.
     pub fn boundary(&self, l: usize) -> usize {
         self.lv[l].home.iter().filter(|&&c| c == NONE).count()
@@ -133,10 +129,10 @@ pub fn customize(g: &Graph, p: &Nest) -> Multi {
             for &x in b {
                 let c = c as u32;
                 if k == 0 {
-                    search.run(g, x as usize, None, |a| part.cell[a] == c, None);
+                    search.run(g, x as usize, None, |a| part.cell[a] == c);
                 } else {
                     let below = &lv[k - 1];
-                    search.run(&below.g, x as usize, None, |a| below.group[a] == c, None);
+                    search.run(&below.g, x as usize, None, |a| below.group[a] == c);
                 }
                 arcs.extend(
                     b.iter()

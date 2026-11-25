@@ -1,7 +1,7 @@
 //! Breadth-first search and Dijkstra against oracles that share no code with them: Bellman–Ford
 //! relaxation to a fixed point, and the parent rule applied to those distances.
 
-use route::graph::{Graph, Tree, bfs, check, dijkstra};
+use route::graph::{Graph, Tree, check, dijkstra};
 
 /// splitmix64 (Steele, Lea and Flood 2014).
 fn mix(z: &mut u64) -> u64 {
@@ -43,44 +43,6 @@ fn bellman(n: usize, arcs: &[(u32, u32, f64)], s: usize, unit: bool) -> Vec<f64>
 }
 
 #[test]
-fn bfs_matches_relaxation_and_the_smallest_parent_rule() {
-    let mut z = 3;
-    // Dense graphs take bottom-up layers, sparse ones top-down.
-    for (n, p) in [
-        (1, 0.0),
-        (2, 1.0),
-        (9, 0.3),
-        (40, 0.05),
-        (60, 0.5),
-        (300, 0.01),
-        (300, 0.2),
-    ] {
-        for _ in 0..20 {
-            let arcs = random(n, p, &mut z);
-            let g = Graph::new(n, arcs.iter().copied());
-            let s = mix(&mut z) as usize % n;
-            let t = bfs(&g, &g.reverse(), s);
-            let d = bellman(n, &arcs, s, true);
-            assert_eq!(t.d, d);
-            for v in (0..n).filter(|&v| v != s) {
-                let parent = arcs
-                    .iter()
-                    .filter(|a| {
-                        a.1 as usize == v
-                            && a.0 != a.1
-                            && d[v].is_finite()
-                            && d[a.0 as usize] + 1.0 == d[v]
-                    })
-                    .map(|a| a.0)
-                    .min();
-                assert_eq!(t.pi[v], parent.unwrap_or(v as u32), "n {n}, s {s}, v {v}");
-            }
-            assert!(check(&g, s, &t, true));
-        }
-    }
-}
-
-#[test]
 fn dijkstra_matches_relaxation() {
     let mut z = 5;
     for (n, p) in [(1, 0.0), (8, 0.4), (50, 0.08), (200, 0.02)] {
@@ -96,7 +58,7 @@ fn dijkstra_matches_relaxation() {
                     .all(|(a, b)| a == b || (a - b).abs() <= 1e-12 * b),
                 "n {n}"
             );
-            assert!(check(&g, s, &t, false));
+            assert!(check(&g, s, &t));
         }
     }
 }
@@ -113,8 +75,8 @@ fn check_rejects_wrong_trees() {
             pi: vec![0, 0, 1, 0]
         }
     );
-    assert!(check(&g, 0, &t, false));
-    let bad = |d: Vec<f64>, pi: Vec<u32>| !check(&g, 0, &Tree { d, pi }, false);
+    assert!(check(&g, 0, &t));
+    let bad = |d: Vec<f64>, pi: Vec<u32>| !check(&g, 0, &Tree { d, pi });
     assert!(
         bad(vec![0.0, 1.0, 3.0, 1.5], vec![0, 0, 3, 0]),
         "detour parent"
@@ -144,8 +106,7 @@ fn check_rejects_wrong_trees() {
         &Tree {
             d: vec![0.0, 1.0, 1.0],
             pi: vec![0, 2, 1]
-        },
-        false
+        }
     ));
-    assert!(check(&z, 0, &dijkstra(&z, 0), false));
+    assert!(check(&z, 0, &dijkstra(&z, 0)));
 }

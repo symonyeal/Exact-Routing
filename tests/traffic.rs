@@ -1,11 +1,10 @@
-//! Engines that take new metrics on a fixed topology, against Dijkstra on every metric: overlay
-//! customization of one partition, CH rebuild and fixed-order re-contraction, CCH customization.
+//! Engines that take new metrics on a fixed topology, against Dijkstra on every metric: CH rebuild
+//! and fixed-order re-contraction, CCH customization (full, partial, threaded), multilevel overlays.
 
 use route::cch::Cch;
 use route::ch::Ch;
 use route::graph::{Graph, dijkstra};
 use route::levels::{Query, nest};
-use route::overlay::{Model, Search, build, customize, partition};
 use route::road::mix;
 
 /// One h×w grid topology (each neighbour pair kept with probability 0.8, as one or two arcs) under
@@ -45,23 +44,16 @@ fn fixed_preparation_answers_every_metric_exactly() {
     let mut z = 20261125;
     let (gs, xy) = grids(18, 23, 4, &mut z);
     let n = gs[0].n;
-    let p = partition(&gs[0], &xy, 40, Model::Hypergraph);
-    assert!(
-        gs.iter()
-            .all(|g| partition(g, &xy, 40, Model::Hypergraph) == p)
-    );
     let cch = Cch::new(&gs[0], &xy);
     let order = Ch::new(&gs[0]).order();
-    let (mut search, mut ws, mut path) = (Search::new(n), cch.workspace(), Vec::new());
+    let (mut ws, mut path) = (cch.workspace(), Vec::new());
     for g in &gs {
-        let o = customize(g, &p);
         let m = cch.customize(g, 1).0;
         let (full, fixed) = (Ch::new(g), Ch::with_order(g, &order));
         let (mut c1, mut c2) = (full.calculator(), fixed.calculator());
         for _ in 0..200 {
             let (s, t) = (mix(&mut z) as usize % n, mix(&mut z) as usize % n);
             let d = dijkstra(g, s).d[t];
-            assert_eq!(search.query(g, &o, s, t), d, "overlay {s}->{t}");
             assert_eq!(full.query(&mut c1, s, t), d, "CH {s}->{t}");
             assert_eq!(fixed.query(&mut c2, s, t), d, "fixed-order CH {s}->{t}");
             assert_eq!(
@@ -200,13 +192,6 @@ fn multilevel_overlays_answer_every_metric_exactly() {
     let n = gs[0].n;
     for us in [vec![16, 64], vec![8, 40, 160]] {
         let p = nest(&gs[0], &xy, &us);
-        for (l, &u) in us.iter().enumerate() {
-            let one = build(&gs[0], &xy, u, Model::Hypergraph);
-            assert!(
-                p.arc_cells(l).eq(one.arc_cells()),
-                "level {l} differs from U={u}"
-            );
-        }
         let mut q = Query::new(n);
         for g in &gs {
             let m = route::levels::customize(g, &p);

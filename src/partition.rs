@@ -1,134 +1,34 @@
-//! Two-level overlays for exact point-to-point distance queries, built from a graph partition or
-//! a hypergraph partition.
+//! Recursive inertial-flow bisection of a road graph's edges (Schild and Sommer 2015), the
+//! separator routine behind the CCH order and the multilevel overlay cells.
 //!
-//! Problem. Answer many s–t distance queries on one road graph. Cells partition the edges; a node
-//! incident to edges of two cells, or to a cut edge, is a boundary node. The overlay stores, for
-//! each cell, the in-cell distances between its boundary nodes, and the cut arcs. A query runs
-//! Dijkstra over the arcs of the cells holding s and t plus the overlay (Delling, Goldberg, Pajor
-//! and Werneck, customizable route planning, 2011). A shortest path splits at boundary nodes into
-//! in-cell pieces and cut arcs, each represented, so the distance is exact.
-//!
-//! Partitions come from recursive inertial-flow bisection (Schild and Sommer 2015) until cells have
-//! at most U nodes, under one of two cut models:
-//!   graph       a minimum set of edges separates the source and sink nodes; the two sides are
-//!               node sets, and the cut edges join them;
-//!   hypergraph  a minimum set of nodes separates them; the sides are edge sets that share the
-//!               separator. This is bisection of the dual hypergraph (one hyperedge per node, over
-//!               its incident edges) under the connectivity metric, which counts boundary nodes
-//!               directly.
+//! Each step projects the nodes on four directions, takes the first and last quarters as sources
+//! and sinks, and cuts a minimum set of nodes between them (Dinic's blocking flows on split nodes).
+//! Separating nodes is bisection of the dual hypergraph (one hyperedge per node, over its incident
+//! edges) under the connectivity metric, so a cut counts boundary junctions directly. Where a
+//! source and a sink are adjacent no node cut exists, and a minimum edge cut is taken instead.
 //!
 //! Legend
 //!   U      maximum nodes per cell
 //!   e      undirected edge {x, y}, x < y, of the road graph
-//!   c(a)   cell of arc a; NONE for a cut arc
-//!   B      boundary nodes
+//!   B      boundary nodes: incident to edges of two cells, or to a cut edge
 
-use crate::graph::{Graph, Key};
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use crate::graph::Graph;
 
 const NONE: u32 = u32::MAX;
 
-/// The cut model of the bisection.
+/// The cut model of one minimum cut: nodes separate the sides, or (fallback) edges join them.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Model {
+pub(crate) enum Model {
     Graph,
     Hypergraph,
 }
 
-/// Cells of the arcs, boundary nodes and overlay arcs.
-pub struct Overlay {
-    cell: Vec<u32>,
-    home: Vec<u32>,
-    off: Vec<usize>,
-    head: Vec<u32>,
-    w: Vec<f64>,
-}
-
-impl Overlay {
-    /// Cell IDs for base arcs in graph CSR order; `None` marks a cut arc.
-    pub fn arc_cells(&self) -> impl Iterator<Item = Option<u32>> + '_ {
-        self.cell.iter().map(|&c| (c != NONE).then_some(c))
-    }
-}
-
-/// Partition the edges of g into cells of at most `u` nodes and build the overlay. `xy` are planar
-/// node coordinates for the inertial-flow projections.
-pub fn build(g: &Graph, xy: &[(f64, f64)], u: usize, model: Model) -> Overlay {
-    customize(g, &partition(g, xy, u, model))
-}
-
-/// Compute the in-cell boundary distances of a fixed partition under the weights of `g`. `p`
-/// depends only on the topology and coordinates, so one partition serves every graph with the same
-/// arcs in the same CSR order; only `g.w` is read for the distances.
-pub fn customize(g: &Graph, p: &Partition) -> Overlay {
-    let n = g.n;
-    assert!(p.cell.len() == g.head.len() && p.home.len() == n);
-    let Partition {
-        cell,
-        home,
-        members,
-    } = p;
-    let mut over = Vec::new();
-    let mut search = Search::new(n);
-    for (c, b) in members.iter().enumerate() {
-        for &x in b {
-            search.run(g, x as usize, None, |a| cell[a] == c as u32, None);
-            over.extend(
-                b.iter()
-                    .filter(|&&y| y != x && search.d[y as usize] < f64::INFINITY)
-                    .map(|&y| (x, y, search.d[y as usize])),
-            );
-        }
-    }
-    for x in 0..n {
-        let r = g.off[x]..g.off[x + 1];
-        let arcs = cell[r.clone()].iter().zip(&g.head[r.clone()]).zip(&g.w[r]);
-        over.extend(
-            arcs.filter(|a| *a.0.0 == NONE)
-                .map(|((_, &y), &w)| (x as u32, y, w)),
-        );
-    }
-    let o = Graph::new(n, over);
-    Overlay {
-        cell: cell.clone(),
-        home: home.clone(),
-        off: o.off,
-        head: o.head,
-        w: o.w,
-    }
-}
-
 /// A metric-independent partition: the cell of each arc in CSR order (NONE when cut), the cell of
 /// each interior node (NONE for a boundary node), and the boundary nodes of each cell.
-#[derive(PartialEq)]
-pub struct Partition {
+pub(crate) struct Partition {
     pub(crate) cell: Vec<u32>,
     pub(crate) home: Vec<u32>,
     pub(crate) members: Vec<Vec<u32>>,
-}
-
-/// Partition the edges of g into cells of at most `u` nodes by recursive inertial-flow bisection.
-/// Reads the arcs' endpoints only, never their weights.
-pub fn partition(g: &Graph, xy: &[(f64, f64)], u: usize, model: Model) -> Partition {
-    assert!(u >= 2 && xy.len() == g.n);
-    let n = g.n;
-    let (edges, edge) = undirected(g);
-    // Recursive bisection of edge sets; `owner` is each edge's cell, NONE once cut.
-    let mut owner = vec![NONE; edges.len()];
-    let mut cells = 0;
-    let mut stack = vec![(0..edges.len() as u32).collect::<Vec<u32>>()];
-    while let Some(piece) = stack.pop() {
-        let nodes = endpoints(&edges, &piece);
-        if nodes.len() <= u {
-            piece.iter().for_each(|&e| owner[e as usize] = cells);
-            cells += 1;
-        } else {
-            let (a, b) = bisect(&edges, &piece, &nodes, xy, model);
-            stack.extend([a, b]);
-        }
-    }
-    assemble(n, &edges, &edge, &owner, cells)
 }
 
 /// The partition whose undirected edge e lies in cell owner[e] (NONE when cut), of `cells` cells.
@@ -385,86 +285,6 @@ fn flow_path(
         }
     }
     x == snk
-}
-
-/// Dijkstra with reusable buffers, restricted to the arcs `allowed` admits plus optional overlay
-/// arcs at boundary nodes, stopping when t is settled. Only touched entries are reset.
-pub struct Search {
-    pub d: Vec<f64>,
-    done: Vec<bool>,
-    touched: Vec<u32>,
-    heap: BinaryHeap<Reverse<(Key, u32)>>,
-}
-
-impl Search {
-    pub fn new(n: usize) -> Search {
-        Search {
-            d: vec![f64::INFINITY; n],
-            done: vec![false; n],
-            touched: Vec::new(),
-            heap: BinaryHeap::new(),
-        }
-    }
-
-    /// d(s, t) when t is given, else the distances from s; overlay arcs are taken at nodes with
-    /// `overlay` set.
-    pub fn run(
-        &mut self,
-        g: &Graph,
-        s: usize,
-        t: Option<usize>,
-        allowed: impl Fn(usize) -> bool,
-        o: Option<&Overlay>,
-    ) -> f64 {
-        for &v in &self.touched {
-            (self.d[v as usize], self.done[v as usize]) = (f64::INFINITY, false);
-        }
-        self.touched.clear();
-        self.heap.clear();
-        self.heap.push(Reverse((Key(0.0), s as u32)));
-        self.d[s] = 0.0;
-        self.touched.push(s as u32);
-        while let Some(Reverse((Key(dx), x))) = self.heap.pop() {
-            let x = x as usize;
-            if std::mem::replace(&mut self.done[x], true) {
-                continue;
-            }
-            if Some(x) == t {
-                return dx;
-            }
-            let over = o.filter(|o| o.home[x] == NONE);
-            let ext = over.map_or(0..0, |o| o.off[x]..o.off[x + 1]);
-            let base = (g.off[x]..g.off[x + 1])
-                .filter(|&a| allowed(a))
-                .map(|a| (g.head[a], g.w[a]));
-            let extra = over
-                .into_iter()
-                .flat_map(|o| ext.clone().map(move |a| (o.head[a], o.w[a])));
-            for (y, w) in base.chain(extra) {
-                let y = y as usize;
-                if dx + w < self.d[y] {
-                    if self.d[y] == f64::INFINITY {
-                        self.touched.push(y as u32);
-                    }
-                    self.d[y] = dx + w;
-                    self.heap.push(Reverse((Key(dx + w), y as u32)));
-                }
-            }
-        }
-        t.map_or(0.0, |t| self.d[t])
-    }
-
-    /// d(s, t) on the arcs of the cells of s and t and the overlay.
-    pub fn query(&mut self, g: &Graph, o: &Overlay, s: usize, t: usize) -> f64 {
-        let (cs, ct) = (o.home[s], o.home[t]);
-        self.run(
-            g,
-            s,
-            Some(t),
-            |a| o.cell[a] != NONE && (o.cell[a] == cs || o.cell[a] == ct),
-            Some(o),
-        )
-    }
 }
 
 #[cfg(test)]

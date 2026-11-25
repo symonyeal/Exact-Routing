@@ -45,7 +45,7 @@
 //!   piece       [lo, hi, depth]: the rank range of one nested-dissection piece and its depth
 
 use crate::graph::Graph;
-use crate::overlay::{Model, separate};
+use crate::partition::{Model, separate};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::time::Instant;

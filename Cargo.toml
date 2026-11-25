@@ -3,7 +3,7 @@ name = "route"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.87"
-description = "Exact shortest paths with optimality certificates: word-parallel grid search and sparse graphs"
+description = "Exact road routing with certified answers: CCH, multilevel overlays and industry comparisons"
 license = "MIT"
 repository = "https://github.com/symonyeal/Exact-Routing"
 
@@ -11,17 +11,7 @@ repository = "https://github.com/symonyeal/Exact-Routing"
 fast_paths = "1.0"
 serde_json = "1"
 
-[dev-dependencies]
-pathfinding = "4"
-
-[[bench]]
-name = "grid"
-harness = false
-
 [profile.release]
 codegen-units = 1
 lto = "thin"
 panic = "abort"
-
-[profile.bench]
-inherits = "release"

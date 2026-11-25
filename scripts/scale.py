@@ -48,11 +48,12 @@ LABELS = {"union": "Seoul, Incheon, Gyeonggi, Gangwon, Chungbuk", "korea": "Nati
 COLUMNS = (("default_speed_kmh",) + tuple(f"weekday_{s}_p50" for s in traffic.SLOTS)
            + tuple(f"weekend_{s}_p50" for s in traffic.SLOTS))
 METRICS = ("free",) + tuple(f"weekday {s}" for s in traffic.SLOTS) + tuple(f"weekend {s}" for s in traffic.SLOTS)
-ENGINES = ("dijkstra", "bidirectional", "overlay-1024", "overlay-4096", "fast_paths-CH",
-           "fast_paths-CH-fixed-order", "CCH", "CCH-4-threads", "CCH-partial", "CCH-perfect",
-           "overlay-1024-32768", "overlay-256-4096-65536")
-PREPARED = {"overlay-1024", "overlay-4096", "overlay-1024-32768", "overlay-256-4096-65536",
-            "fast_paths-CH-fixed-order", "CCH"}
+ENGINES = ("dijkstra", "bidirectional", "fast_paths-CH", "fast_paths-CH-fixed-order", "CCH", "CCH-4-threads",
+           "CCH-partial", "CCH-perfect", "overlay-1024-32768", "overlay-256-4096-65536")
+# The engines without the CCH update variants: K* is where CCH becomes the cheapest of these.
+BASE = ("dijkstra", "bidirectional", "fast_paths-CH", "fast_paths-CH-fixed-order", "CCH",
+        "overlay-1024-32768", "overlay-256-4096-65536")
+PREPARED = {"overlay-1024-32768", "overlay-256-4096-65536", "fast_paths-CH-fixed-order", "CCH"}
 SAME = ("CCH", "CCH-4-threads", "CCH-partial")
 PASSES, SLOT_COUNT = 3, len(traffic.SLOTS)
 SEQUENCES = ("weekday-consecutive", "weekday-observed", "weekend-consecutive", "weekend-observed", "synthetic")
@@ -249,11 +250,11 @@ def engines(rows):
 
 def kstar(eng, requests=10**6, p=None):
     """For R requests per day (pass p's values when given): the cheapest engine at K = 0 and the
-    switches of the envelope over every engine; and K*, the K above which CCH is the cheapest of
-    Phase T's seven engines (0 if it is at K = 0, None if never), T's break-even."""
+    switches of the envelope over every engine; and K*, the K above which CCH is the cheapest of the
+    BASE engines (0 if it is at K = 0, None if never)."""
     first, switches = traffic.breakeven(eng, requests, p)
-    head, seven = traffic.breakeven({e: eng[e] for e in traffic.ENGINES}, requests, p)
-    k = 0.0 if head == "CCH" else next((x for x, e in seven if e == "CCH"), None)
+    head, base = traffic.breakeven({e: eng[e] for e in BASE}, requests, p)
+    k = 0.0 if head == "CCH" else next((x for x, e in base if e == "CCH"), None)
     return first, switches, k
 
 
@@ -359,6 +360,8 @@ def summarize(files):
     """Committed summary rows for one size from its raw shard files."""
     raws = [(f, f.read_bytes()) for f in files]
     rows = [json.loads(line) for _, raw in raws for line in raw.decode("utf-8").splitlines()]
+    # Runs before the refocus also timed one-level overlays; they are not part of the comparison.
+    rows = [r for r in rows if r["kind"] not in ("slot", "prepare", "memory") or r["method"] in ENGINES + ("none", "CCH")]
     q, shards = validate(rows)
     size = rows[0]["size"]
     g = next(r for r in rows if r["kind"] == "graph" and r["mode"] == "time")

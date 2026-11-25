@@ -63,13 +63,13 @@ class Fits(unittest.TestCase):
 
 
 class Breakeven(unittest.TestCase):
-    def test_kstar_is_the_switch_into_cch_among_the_seven(self):
+    def test_kstar_is_the_switch_into_cch_among_the_base_engines(self):
         eng = {e: {"q": 100.0, "u": 0.0} for e in scale.ENGINES}
         eng["fast_paths-CH"] = {"q": 5.0, "u": 3.6}
         eng["CCH"] = {"q": 10.0, "u": 0.036}
         eng["CCH-perfect"] = {"q": 4.0, "u": 0.36}
         first, switches, k = scale.kstar(eng)
-        # Seven engines: CH costs 0.005 + 0.001 K, CCH 0.01 + 0.00001 K: K* = 0.005 / 0.00099.
+        # Base engines: CH costs 0.005 + 0.001 K, CCH 0.01 + 0.00001 K: K* = 0.005 / 0.00099.
         self.assertAlmostEqual(k, 0.005 / 0.00099)
         # All engines: CCH-perfect at K = 0, CCH above 0.006 / 0.00009.
         self.assertEqual(first, "CCH-perfect")
