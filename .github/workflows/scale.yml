@@ -1,0 +1,146 @@
+name: Scale study
+
+on:
+  workflow_dispatch:
+    inputs:
+      size:
+        description: One size to run, or all
+        default: all
+        required: true
+      previous_run:
+        description: Prior run whose completed shard artifacts should be reused
+        required: false
+
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: scale-${{ github.ref }}-${{ inputs.size || 'all' }}
+  cancel-in-progress: true
+
+env:
+  ROUTINGKIT: 54d49bb0cdea56dde182357522e4e86a03c57852
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install numpy pandas pyarrow
+      - run: cargo fmt --check
+      - run: cargo clippy --release --locked --all-targets -- -D warnings
+      - run: cargo test --release --locked
+      - run: python -m unittest discover -s scripts -p 'test_*.py' -v
+      - name: Shard plan
+        id: plan
+        env:
+          SELECTED: ${{ inputs.size || 'all' }}
+        run: echo "matrix=$(python scripts/scale.py plan "$SELECTED")" >> "$GITHUB_OUTPUT"
+
+  shard:
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix: ${{ fromJSON(needs.checks.outputs.matrix) }}
+    env:
+      RUSTFLAGS: -C target-cpu=native
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install numpy pandas pyarrow
+      - run: cargo build --release --locked --bin scale
+      - name: Build RoutingKit at the pinned commit and its CCH driver
+        if: ${{ contains(matrix.modes, 'routingkit') }}
+        run: |
+          git clone --quiet https://github.com/RoutingKit/RoutingKit.git /tmp/RoutingKit
+          git -C /tmp/RoutingKit checkout --quiet "$ROUTINGKIT"
+          test "$(git -C /tmp/RoutingKit rev-parse HEAD)" = "$ROUTINGKIT"
+          head -3 /tmp/RoutingKit/LICENSE
+          make -C /tmp/RoutingKit -j"$(nproc)" lib/libroutingkit.a
+          g++ -std=c++17 -O3 -march=native -fopenmp -DROUTINGKIT_COMMIT="\"$ROUTINGKIT\"" \
+            -I/tmp/RoutingKit/include external/routingkit/cch.cpp /tmp/RoutingKit/lib/libroutingkit.a \
+            -o external/routingkit/cch
+      - name: Fetch the pinned network with all slot speeds
+        run: python scripts/scale.py fetch "${{ matrix.size }}"
+      - name: Run the shard
+        timeout-minutes: 340
+        run: |
+          IFS=, read -ra modes <<< "${{ matrix.modes }}"
+          for mode in "${modes[@]}"; do
+            python scripts/scale.py run "${{ matrix.size }}" "$mode" "results/scale/${{ matrix.name }}-$mode.jsonl" \
+              --queries "${{ matrix.queries }}" --passes "${{ matrix.passes }}" --slots "${{ matrix.slots }}" \
+              --threads "$(nproc)"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scale-${{ matrix.name }}
+          path: results/scale/*.jsonl
+          if-no-files-found: error
+          retention-days: 30
+      - name: Keep the rows of an unfinished shard
+        if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: partial-${{ matrix.name }}
+          path: |
+            results/scale/*.jsonl
+            results/scale/*.partial
+          if-no-files-found: ignore
+          retention-days: 30
+
+  report:
+    needs: shard
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install numpy pandas pyarrow
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.previous_run != '' }}
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.previous_run }}
+          pattern: scale-*
+          path: results/scale
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: scale-*
+          path: results/scale
+          merge-multiple: true
+      - name: Summarize every complete size
+        run: |
+          sha256sum results/scale/*.jsonl
+          python scripts/scale.py report results/scale
+          cat results/scale.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scale-summary
+          path: |
+            results/scale.jsonl
+            results/scale.md
+          retention-days: 30

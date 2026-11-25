@@ -23,7 +23,7 @@ use route::ch::Ch;
 use route::graph::{Graph, check, dijkstra};
 use route::overlay::{Model, Overlay, Search, customize, partition};
 use route::query::BiSearch;
-use route::road::{Road, metrics, mix, pairs};
+use route::road::{Road, metrics, pairs, shuffle};
 use serde_json::json;
 use std::hint::black_box;
 use std::time::Instant;
@@ -47,13 +47,6 @@ enum Index {
     Overlay(Overlay),
     Ch(Ch, fast_paths::PathCalculator),
     Cch(route::cch::Metric),
-}
-
-/// Fisher–Yates shuffle driven by SplitMix64.
-fn shuffle<T>(x: &mut [T], z: &mut u64) {
-    for i in (1..x.len()).rev() {
-        x.swap(i, mix(z) as usize % (i + 1));
-    }
 }
 
 /// c[τ][σ] for one query, flattened τ-major; infinite when t is unreachable.
@@ -109,7 +102,11 @@ fn main() {
     let (q, repeats, threads) = (arg(2, 1000), arg(3, 3), arg(4, 2));
     assert!(q > 0 && repeats > 0 && threads > 0);
     let xy = Road::decode(&road).expect("invalid road binary").xy;
-    let gs = metrics(&road, &cols, SCALE).expect("invalid metrics");
+    let gs: Vec<Graph> = metrics(&road, &cols, SCALE, |_| true)
+        .expect("invalid metrics")
+        .into_iter()
+        .flatten()
+        .collect();
     let (n, k) = (gs[0].n, gs.len());
     assert!(k >= 2, "need free flow and at least one slot");
     let slots = k - 1;
@@ -182,7 +179,7 @@ fn main() {
             let calc = ch.calculator();
             Index::Ch(ch, calc)
         }
-        _ => Index::Cch(cch.customize(g)),
+        _ => Index::Cch(cch.customize(g, 1).0),
     };
     let (mut search, mut bi, mut ws) = (Search::new(n), BiSearch::new(n), cch.workspace());
     let mut path = Vec::new();

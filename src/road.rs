@@ -26,10 +26,16 @@ pub fn scaled(g: Graph, scale: usize) -> Result<Graph, &'static str> {
     ))
 }
 
-/// The graphs of k travel-time columns over the arcs of road binary `road`, from metrics file `b`:
-/// k,m:u64; w:f64[k][m] seconds, nonnegative and finite, column j in the binary's arc order. Every
-/// graph is built from the same arc sequence, so arc a of one graph's CSR is arc a of each other's.
-pub fn metrics(road: &[u8], b: &[u8], scale: usize) -> Result<Vec<Graph>, &'static str> {
+/// The graphs of the travel-time columns j with keep(j) over the arcs of road binary `road`, from
+/// metrics file `b`: k,m:u64; w:f64[k][m] seconds, nonnegative and finite, column j in the binary's
+/// arc order; None for the columns not kept. Every graph is built from the same arc sequence, so
+/// arc a of one graph's CSR is arc a of each other's.
+pub fn metrics(
+    road: &[u8],
+    b: &[u8],
+    scale: usize,
+    keep: impl Fn(usize) -> bool,
+) -> Result<Vec<Option<Graph>>, &'static str> {
     let r = Road::decode(road)?;
     let (n, m) = (r.g.n, word(road, 8) as usize);
     if b.len() < 16 || word(b, 8) as usize != m {
@@ -43,6 +49,9 @@ pub fn metrics(road: &[u8], b: &[u8], scale: usize) -> Result<Vec<Graph>, &'stat
     let node = |i: usize| u32::from_le_bytes(road[i..i + 4].try_into().unwrap());
     (0..k)
         .map(|j| {
+            if !keep(j) {
+                return Ok(None);
+            }
             let w =
                 |a: usize| f64::from_le_bytes(b[16 + 8 * (j * m + a)..][..8].try_into().unwrap());
             if (0..m).any(|a| !w(a).is_finite() || w(a) < 0.0) {
@@ -52,7 +61,7 @@ pub fn metrics(road: &[u8], b: &[u8], scale: usize) -> Result<Vec<Graph>, &'stat
                 n,
                 (0..m).map(|a| (node(at + 4 * a), node(at + 4 * m + 4 * a), w(a))),
             );
-            scaled(g, scale)
+            scaled(g, scale).map(Some)
         })
         .collect()
 }
@@ -79,6 +88,13 @@ pub fn pairs(g: &Graph, q: usize) -> Vec<(usize, usize)> {
             (s, t)
         })
         .collect()
+}
+
+/// Fisher–Yates shuffle driven by SplitMix64.
+pub fn shuffle<T>(x: &mut [T], z: &mut u64) {
+    for i in (1..x.len()).rev() {
+        x.swap(i, mix(z) as usize % (i + 1));
+    }
 }
 
 /// SplitMix64 (Steele, Lea and Flood 2014): advance z and return the next 64 random bits.
@@ -198,17 +214,25 @@ mod tests {
         [1.0f64, 2.0, 3.5, 4.0]
             .iter()
             .for_each(|x| b.extend(x.to_le_bytes()));
-        let g = metrics(&road, &b, 0).unwrap();
+        let g: Vec<Graph> = metrics(&road, &b, 0, |_| true)
+            .unwrap()
+            .into_iter()
+            .flatten()
+            .collect();
         assert_eq!(g[0].arcs(0).collect::<Vec<_>>(), [(1, 2.0)]);
         assert_eq!(g[0].arcs(1).collect::<Vec<_>>(), [(0, 1.0)]);
         assert_eq!(g[1].arcs(0).collect::<Vec<_>>(), [(1, 4.0)]);
         assert_eq!(
-            metrics(&road, &b, 1000).unwrap()[1].arcs(1).next(),
+            metrics(&road, &b, 1000, |j| j == 1).unwrap()[1]
+                .as_ref()
+                .unwrap()
+                .arcs(1)
+                .next(),
             Some((0, 3500.0))
         );
-        assert!(metrics(&road, &b[..b.len() - 8], 0).is_err());
+        assert!(metrics(&road, &b[..b.len() - 8], 0, |_| true).is_err());
         let mut bad = b.clone();
         bad[16..24].copy_from_slice(&(-1.0f64).to_le_bytes());
-        assert!(metrics(&road, &bad, 0).is_err());
+        assert!(metrics(&road, &bad, 0, |_| true).is_err());
     }
 }

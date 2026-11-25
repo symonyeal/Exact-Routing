@@ -69,6 +69,17 @@ impl Graph {
         &self.w
     }
 
+    /// The same arcs with weights w, in CSR order.
+    pub fn with_weights(&self, w: Vec<f64>) -> Graph {
+        assert_eq!(w.len(), self.w.len());
+        Graph {
+            n: self.n,
+            off: self.off.clone(),
+            head: self.head.clone(),
+            w,
+        }
+    }
+
     /// CSR indices of the arcs of the tree path from the root of `t` to v, last arc first. Each step
     /// takes the first parallel arc (π(x), x) that is tight in `t`. Empty when v is the root or
     /// unreached; `t` must be a certified tree of this graph.

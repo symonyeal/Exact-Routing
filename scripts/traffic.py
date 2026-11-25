@@ -53,25 +53,7 @@ def fetch(region):
         f"{stem}_road_graph_edges.parquet",
         ["source", "target", "length_m", "oneway", "default_speed_kmh", *COLUMNS[1:]],
     )
-    binary, n, m = roads.encode(nodes, edges, COLUMNS[1])
-    two = ~edges.oneway.to_numpy(bool)
-    w = np.stack([roads.seconds(edges, c, two) for c in COLUMNS])
-    cols = np.array([len(COLUMNS), m], "<u8").tobytes() + w.astype("<f8").tobytes()
-    default = edges.default_speed_kmh.to_numpy(np.float64)
-    stats = {}
-    for name, column in zip(METRICS, COLUMNS):
-        kmh = edges[column].to_numpy(np.float64)
-        filled = np.where(np.isnan(kmh), default, kmh)
-        stats[name] = {
-            "missing_edges": int(np.isnan(kmh).sum()),
-            "clipped_edges": int((filled < 5.0).sum()),
-            "faster_than_default_edges": int((filled > default).sum()),
-            "observed": name in OBSERVED,
-        }
-    DATA.mkdir(parents=True, exist_ok=True)
-    (DATA / f"{region}.bin").write_bytes(binary)
-    (DATA / f"{region}.metrics.bin").write_bytes(cols)
-    meta = {
+    source = {
         "dataset": "CAMUS-LAB/data-road_network_eta",
         "url": roads.URL.format(f"{stem}_road_graph_edges.parquet"),
         "revision": roads.REVISION,
@@ -80,17 +62,45 @@ def fetch(region):
         "edge_rows": len(edges),
         "nodes_sha256": nodes_hash,
         "edges_sha256": edges_hash,
+    }
+    store(DATA, region, nodes, edges, COLUMNS, METRICS, source)
+
+
+def store(directory, name, nodes, edges, columns, metrics, source):
+    """Write directory/name.bin (the road binary, am_peak weights), name.metrics.bin (one
+    travel-time column per speed column, named by `metrics`) and name.meta.json (`source` plus
+    hashes and per-column statistics)."""
+    binary, n, m = roads.encode(nodes, edges, "weekday_am_peak_p50")
+    two = ~edges.oneway.to_numpy(bool)
+    w = np.stack([roads.seconds(edges, c, two) for c in columns])
+    cols = np.array([len(columns), m], "<u8").tobytes() + w.astype("<f8").tobytes()
+    default = edges.default_speed_kmh.to_numpy(np.float64)
+    stats = {}
+    for metric, column in zip(metrics, columns):
+        kmh = edges[column].to_numpy(np.float64)
+        filled = np.where(np.isnan(kmh), default, kmh)
+        stats[metric] = {
+            "missing_edges": int(np.isnan(kmh).sum()),
+            "clipped_edges": int((filled < 5.0).sum()),
+            "faster_than_default_edges": int((filled > default).sum()),
+            "observed": metric.split(" ")[-1] in OBSERVED,
+        }
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{name}.bin").write_bytes(binary)
+    (directory / f"{name}.metrics.bin").write_bytes(cols)
+    meta = {
+        **source,
         "output_sha256": hashlib.sha256(binary).hexdigest(),
         "metrics_sha256": hashlib.sha256(cols).hexdigest(),
         "node_count": n,
         "arc_count": m,
-        "metrics": list(METRICS),
-        "columns": list(COLUMNS),
+        "metrics": list(metrics),
+        "columns": list(columns),
         "speed_rule": "missing slot speed = default_speed_kmh; speed clipped below at 5 km/h",
         "column_stats": stats,
     }
-    (DATA / f"{region}.meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8", newline="\n")
-    print(f"{region}: {n} nodes, {m} arcs, {len(COLUMNS)} metrics")
+    (directory / f"{name}.meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8", newline="\n")
+    print(f"{name}: {n} nodes, {m} arcs, {len(columns)} metrics")
 
 
 def run(region, output, queries, repeats, threads):

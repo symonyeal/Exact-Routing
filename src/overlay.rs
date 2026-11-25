@@ -172,9 +172,9 @@ pub fn customize(g: &Graph, p: &Partition, threads: usize) -> Overlay {
 /// each interior node (NONE for a boundary node), and the boundary nodes of each cell.
 #[derive(PartialEq)]
 pub struct Partition {
-    cell: Vec<u32>,
-    home: Vec<u32>,
-    members: Vec<Vec<u32>>,
+    pub(crate) cell: Vec<u32>,
+    pub(crate) home: Vec<u32>,
+    pub(crate) members: Vec<Vec<u32>>,
 }
 
 /// Partition the edges of g into cells of at most `u` nodes by recursive inertial-flow bisection.
@@ -182,19 +182,7 @@ pub struct Partition {
 pub fn partition(g: &Graph, xy: &[(f64, f64)], u: usize, model: Model) -> Partition {
     assert!(u >= 2 && xy.len() == g.n);
     let n = g.n;
-    // Undirected edges and, for each arc, its edge.
-    let mut keys: Vec<(u32, u32, usize)> = (0..n)
-        .flat_map(|x| (g.off[x]..g.off[x + 1]).map(move |a| (x as u32, a)))
-        .map(|(x, a)| (x.min(g.head[a]), x.max(g.head[a]), a))
-        .collect();
-    keys.sort_unstable();
-    let (mut edges, mut edge) = (Vec::new(), vec![0u32; g.head.len()]);
-    for &(x, y, a) in &keys {
-        if edges.last() != Some(&(x, y)) {
-            edges.push((x, y));
-        }
-        edge[a] = edges.len() as u32 - 1;
-    }
+    let (edges, edge) = undirected(g);
     // Recursive bisection of edge sets; `owner` is each edge's cell, NONE once cut.
     let mut owner = vec![NONE; edges.len()];
     let mut cells = 0;
@@ -209,6 +197,17 @@ pub fn partition(g: &Graph, xy: &[(f64, f64)], u: usize, model: Model) -> Partit
             stack.extend([a, b]);
         }
     }
+    assemble(n, &edges, &edge, &owner, cells)
+}
+
+/// The partition whose undirected edge e lies in cell owner[e] (NONE when cut), of `cells` cells.
+pub(crate) fn assemble(
+    n: usize,
+    edges: &[(u32, u32)],
+    edge: &[u32],
+    owner: &[u32],
+    cells: u32,
+) -> Partition {
     let cell: Vec<u32> = edge.iter().map(|&e| owner[e as usize]).collect();
     // A node is interior to one cell or a boundary node.
     let mut home = vec![NONE - 1; n]; // NONE - 1: no incident edge yet
@@ -243,8 +242,25 @@ pub fn partition(g: &Graph, xy: &[(f64, f64)], u: usize, model: Model) -> Partit
     }
 }
 
+/// The undirected edges {x, y}, x < y, of g, ascending, and for each arc in CSR order its edge.
+pub(crate) fn undirected(g: &Graph) -> (Vec<(u32, u32)>, Vec<u32>) {
+    let mut keys: Vec<(u32, u32, usize)> = (0..g.n)
+        .flat_map(|x| (g.off[x]..g.off[x + 1]).map(move |a| (x as u32, a)))
+        .map(|(x, a)| (x.min(g.head[a]), x.max(g.head[a]), a))
+        .collect();
+    keys.sort_unstable();
+    let (mut edges, mut edge) = (Vec::new(), vec![0u32; g.head.len()]);
+    for &(x, y, a) in &keys {
+        if edges.last() != Some(&(x, y)) {
+            edges.push((x, y));
+        }
+        edge[a] = edges.len() as u32 - 1;
+    }
+    (edges, edge)
+}
+
 /// Nodes incident to the edges of a piece, ascending.
-fn endpoints(edges: &[(u32, u32)], piece: &[u32]) -> Vec<u32> {
+pub(crate) fn endpoints(edges: &[(u32, u32)], piece: &[u32]) -> Vec<u32> {
     let mut v: Vec<u32> = piece
         .iter()
         .flat_map(|&e| [edges[e as usize].0, edges[e as usize].1])
@@ -256,7 +272,7 @@ fn endpoints(edges: &[(u32, u32)], piece: &[u32]) -> Vec<u32> {
 
 /// Split a piece's edges in two by the best of four inertial-flow cuts (see `separate`); graph-model
 /// cut edges are dropped.
-fn bisect(
+pub(crate) fn bisect(
     edges: &[(u32, u32)],
     piece: &[u32],
     nodes: &[u32],

@@ -4,7 +4,8 @@
 use route::cch::Cch;
 use route::ch::Ch;
 use route::graph::{Graph, dijkstra};
-use route::overlay::{Model, Search, customize, partition};
+use route::levels::{Query, nest};
+use route::overlay::{Model, Search, build, customize, partition};
 use route::road::mix;
 
 /// One h×w grid topology (each neighbour pair kept with probability 0.8, as one or two arcs) under
@@ -54,7 +55,7 @@ fn fixed_preparation_answers_every_metric_exactly() {
     let (mut search, mut ws, mut path) = (Search::new(n), cch.workspace(), Vec::new());
     for g in &gs {
         let o = customize(g, &p, 2);
-        let m = cch.customize(g);
+        let m = cch.customize(g, 1).0;
         let (full, fixed) = (Ch::new(g), Ch::with_order(g, &order));
         let (mut c1, mut c2) = (full.calculator(), fixed.calculator());
         for _ in 0..200 {
@@ -109,6 +110,112 @@ fn tree_paths_price_to_the_tree_distance_on_their_own_metric() {
                 assert!(other >= dijkstra(&gs[1], s).d[t], "a path beat the optimum");
             } else {
                 assert!(gs[0].path(&tree, t).is_empty());
+            }
+        }
+    }
+}
+
+/// Every CCH distance from a few sources equals Dijkstra's on g.
+fn exact(cch: &Cch, m: &route::cch::Metric, g: &Graph, z: &mut u64) {
+    let mut ws = cch.workspace();
+    for _ in 0..6 {
+        let s = mix(z) as usize % g.n;
+        let d = dijkstra(g, s).d;
+        for (t, &d) in d.iter().enumerate() {
+            assert_eq!(cch.query(m, &mut ws, s, t, None), d, "CCH {s}->{t}");
+        }
+    }
+}
+
+#[test]
+fn partial_parallel_and_full_customization_give_identical_weights() {
+    let mut z = 20261126;
+    let (gs, xy) = grids(24, 31, 3, &mut z);
+    let cch = Cch::new(&gs[0], &xy);
+    for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+        let (from, to) = (&gs[a], &gs[b]);
+        let full = cch.customize(to, 1).0;
+        assert!(full == cch.customize(to, 4).0, "4 threads differ from 1");
+        let m = cch.customize(from, 1).0;
+        let differ: Vec<usize> = (0..to.weights().len())
+            .filter(|&i| from.weights()[i] != to.weights()[i])
+            .collect();
+        let mut all = m.clone();
+        cch.update(&mut all, to, &differ);
+        assert!(
+            all == full,
+            "partial over every changed arc differs from full"
+        );
+        // A random 1% of the arcs take their new weight.
+        let mut changed: Vec<usize> = differ
+            .iter()
+            .copied()
+            .filter(|_| mix(&mut z).is_multiple_of(100))
+            .collect();
+        changed.push(differ[mix(&mut z) as usize % differ.len()]);
+        let mut c = from.weights().to_vec();
+        changed.iter().for_each(|&i| c[i] = to.weights()[i]);
+        let g = from.with_weights(c.clone());
+        let mut part = m.clone();
+        cch.update(&mut part, &g, &changed);
+        assert!(
+            part == cch.customize(&g, 1).0,
+            "partial 1% differs from full"
+        );
+        exact(&cch, &part, &g, &mut z);
+    }
+}
+
+#[test]
+fn partial_update_at_the_top_of_the_elimination_tree_is_exact() {
+    let mut z = 11;
+    let (gs, xy) = grids(20, 20, 1, &mut z);
+    let g = &gs[0];
+    let cch = Cch::new(g, &xy);
+    let arcs: Vec<(usize, usize)> = (0..g.n)
+        .flat_map(|u| g.arcs(u).map(move |(v, _)| (u, v as usize)))
+        .collect();
+    let top = (0..arcs.len())
+        .max_by_key(|&i| cch.rank(arcs[i].0).min(cch.rank(arcs[i].1)))
+        .unwrap();
+    let mut m = cch.customize(g, 1).0;
+    for factor in [50.0, 0.0] {
+        let mut c = g.weights().to_vec();
+        c[top] = (c[top] * factor).max(1.0);
+        let h = g.with_weights(c.clone());
+        cch.update(&mut m, &h, &[top]);
+        assert!(m == cch.customize(&h, 1).0, "top update x{factor} differs");
+        exact(&cch, &m, &h, &mut z);
+        // The next round updates from h back towards g's other weights.
+        let back = h.with_weights(g.weights().to_vec());
+        cch.update(&mut m, &back, &[top]);
+        assert!(m == cch.customize(&back, 1).0);
+    }
+}
+
+#[test]
+fn multilevel_overlays_answer_every_metric_exactly() {
+    let mut z = 5;
+    let (gs, xy) = grids(21, 26, 3, &mut z);
+    let n = gs[0].n;
+    for us in [vec![16, 64], vec![8, 40, 160]] {
+        let p = nest(&gs[0], &xy, &us);
+        for (l, &u) in us.iter().enumerate() {
+            let one = build(&gs[0], &xy, u, Model::Hypergraph);
+            assert!(
+                p.arc_cells(l).eq(one.arc_cells()),
+                "level {l} differs from U={u}"
+            );
+        }
+        let mut q = Query::new(n);
+        for g in &gs {
+            let m = route::levels::customize(g, &p);
+            for _ in 0..8 {
+                let s = mix(&mut z) as usize % n;
+                let d = dijkstra(g, s).d;
+                for (t, &d) in d.iter().enumerate() {
+                    assert_eq!(q.run(g, &p, &m, s, t), d, "{us:?} {s}->{t}");
+                }
             }
         }
     }
