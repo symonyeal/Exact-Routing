@@ -89,7 +89,7 @@ def fetch(region):
         "speed_rule": "missing slot speed = default_speed_kmh; speed clipped below at 5 km/h",
         "column_stats": stats,
     }
-    (DATA / f"{region}.meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    (DATA / f"{region}.meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8", newline="\n")
     print(f"{region}: {n} nodes, {m} arcs, {len(COLUMNS)} metrics")
 
 
@@ -116,7 +116,7 @@ def run(region, output, queries, repeats, threads):
     validate(rows)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("".join(json.dumps(r, sort_keys=True, allow_nan=False) + "\n" for r in rows),
-                      encoding="utf-8")
+                      encoding="utf-8", newline="\n")
 
 
 def validate(rows):
@@ -275,8 +275,8 @@ def report(directory, results):
     if not found <= set(REGIONS) or not found:
         raise ValueError(f"unexpected regions {sorted(found)}")
     (results / "traffic.jsonl").write_text(
-        "".join(json.dumps(r, sort_keys=True, allow_nan=False) + "\n" for r in rows), encoding="utf-8")
-    (results / "traffic.md").write_text(markdown(rows), encoding="utf-8")
+        "".join(json.dumps(r, sort_keys=True, allow_nan=False) + "\n" for r in rows), encoding="utf-8", newline="\n")
+    (results / "traffic.md").write_text(markdown(rows), encoding="utf-8", newline="\n")
 
 
 def markdown(rows):
