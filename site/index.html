@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Exact Routing: route engine cost study</title>
+<meta name="description" content="Compute cost per route request for five exact shortest-path engines on eleven city road networks, with every answer certified.">
+<meta property="og:title" content="Exact Routing: route engine cost study">
+<meta property="og:description" content="Compute per route request for five exact engines on eleven city road networks; 22,000 certified answers, none wrong.">
+<meta property="og:image" content="sejong-query.png">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23143a5a'/%3E%3Cpath d='M7 24V8h6l6 8 6-8' fill='none' stroke='white' stroke-width='3'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script defer src="data.js"></script>
+<script defer src="app.js"></script>
+</head>
+<body>
+<a class="skip" href="#summary">Skip to summary</a>
+<header class="mast wrap">
+  <a class="name" href="./">Exact Routing</a>
+  <span class="what">Route engine cost study, eleven city road networks</span>
+  <a class="repo" href="https://github.com/symonyeal/Exact-Routing">Source on GitHub</a>
+</header>
+
+<main>
+<section class="lead wrap">
+  <p class="kicker">Situation</p>
+  <h1>Precomputing the road network cut compute per route request by <span data-fact="red_all">95–99.6%</span>; a contraction hierarchy was the cheapest engine in every city tested</h1>
+  <p class="intro">Navigation apps, delivery dispatch and ride-hailing price quotes all ask the same question many times per second: what is the fastest route from A to B on today's road network? The engine that answers it sets two things a business pays for: compute per request, and how quickly the service can take in new travel times. This study runs five exact engines on the same 1,000 requests in each of eleven cities (eight in South Korea, plus London, New York and Tokyo). Every answer is checked against an independently certified shortest path: <span data-fact="answers">22,000</span> checks, none wrong.</p>
+</section>
+
+<section id="summary" class="wrap summary" aria-labelledby="summary-h">
+  <h2 id="summary-h" class="label">Key findings</h2>
+  <p class="aside">Percentages are medians of the per-city reductions.</p>
+  <ol class="findings">
+    <li><b>Precomputation is the main cost lever.</b> At the median city, plain Dijkstra search used <span data-fact="dijkstra_ch"></span> core-hours per billion requests. The best overlay used <span data-fact="hyper_ch"></span> and a contraction hierarchy <span data-fact="ch_ch"></span>.</li>
+    <li><b>A contraction hierarchy was cheapest in <span data-fact="ch_wins"></span> cities</b>, using <span data-fact="ch_vs_hyper"></span> of the best overlay's compute per request at the median city, and it rebuilt the whole network in <span data-fact="ch_build"></span>.</li>
+    <li><b>The case for overlays under live traffic is not settled here.</b> Production engines re-weight overlay cells to take in traffic: OSRM's MLD pipeline, and customizable route planning, which its authors described in 2013 as the core of Bing Maps' routing engine. In this study full overlay rebuilds were slower than contraction rebuilds (median <span data-fact="hyper_build"></span> against <span data-fact="ch_build_med"></span> seconds). Re-weighting alone was not timed; that measurement would decide it.</li>
+    <li><b>Where the map is split matters.</b> Cutting cells at junctions instead of road segments halves the overlay's boundary and lowers mean request time by <span data-fact="cut_mean"></span>, at about twice the build time.</li>
+    <li><b>Timing benchmarks can mislead.</b> Up to <span data-fact="carry_max"></span> of a reported short-trip median disappeared when the previous request's cleanup was timed separately. Engine comparisons should report mean cost per request and check for order effects.</li>
+  </ol>
+</section>
+
+<section class="exhibit wrap" aria-labelledby="e1">
+  <p class="num">Exhibit 1</p>
+  <h2 id="e1">Overlays cut compute per request by <span data-fact="red_overlay">95–96%</span>; a contraction hierarchy cut it by <span data-fact="red_ch">99.6%</span></h2>
+  <p class="sub">Core time per route request, indexed to plain Dijkstra in the same city = 100. Log scale. Each dot is one city; the bar marks the median of eleven.</p>
+  <div id="cost-chart" class="chart" role="img" aria-label="Cost index by engine, one dot per city"></div>
+  <div class="scroll"><table id="cost-table"><caption>Core-hours per billion requests and full rebuild time, median over eleven cities (range)</caption><thead><tr><th>Engine</th><th>Core-hours per billion requests</th><th>Mean request, µs</th><th>Full rebuild, s</th></tr></thead><tbody></tbody></table></div>
+  <p class="note">Integer-millisecond travel times, the format the contraction hierarchy library requires; on unrounded seconds the other engines' median indices move by less than 0.2. One worker thread on a 4-vCPU Linux CI runner per city; processors differ between cities, so compare engines within a city. Overlays: best of three cell sizes per city, chosen on the same throughput run. Core-hours = 10<sup>9</sup> ÷ one-worker requests per second ÷ 3,600, from a throughput run that includes worker launch and checking every answer. Mean request time comes from a separate latency run and includes clearing the previous request's state and, for the hierarchy, path reconstruction. Rebuild = partitioning plus all cell distances for one overlay (median of three trials); one contraction run for the hierarchy.</p>
+</section>
+
+<section class="exhibit wrap" aria-labelledby="e2">
+  <p class="num">Exhibit 2</p>
+  <h2 id="e2">At these network sizes a contraction hierarchy rebuilds in seconds; the overlay's update advantage still needs a re-weighting measurement</h2>
+  <div class="scroll"><table class="decide">
+    <thead><tr><th>Situation</th><th>Engine</th><th>Evidence</th></tr></thead>
+    <tbody>
+      <tr><td>High request volume; travel times change less often than a rebuild takes</td><td>Contraction hierarchy</td><td>Cheapest in <span data-fact="ch_wins"></span> cities; full rebuild <span data-fact="ch_build"></span>. Measured here.</td></tr>
+      <tr><td>Travel times change faster than a contraction rebuild, or networks far larger than tested</td><td>Overlay, cells cut at junctions</td><td>OSRM: MLD "calculates routes more slowly than CH, but traffic imports are significantly faster". Customizable route planning (2013) "can incorporate a new metric in less than a second". Here, full overlay rebuilds were slower (median <span data-fact="hyper_build"></span> against <span data-fact="ch_build_med"></span> s); re-weighting alone was not timed. Not settled by this study.</td></tr>
+      <tr><td>Occasional requests, no budget to precompute</td><td>Bidirectional Dijkstra</td><td>Median <span data-fact="bidi_saving"></span> cheaper than plain search, but costlier in <span data-fact="bidi_over"></span> (index up to <span data-fact="bidi_max"></span>, plain Dijkstra = 100). Those are the two cities with the most unreachable pairs; the cause is untested.</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Sources: <a href="https://github.com/Project-OSRM/osrm-backend/wiki/Traffic">OSRM traffic wiki</a> (last edited January 2022); <a href="https://www.microsoft.com/en-us/research/publication/customizable-route-planning-in-road-networks/">Delling, Goldberg, Pajor and Werneck, Customizable Route Planning in Road Networks</a>. The <a href="https://github.com/Project-OSRM/osrm-backend">OSRM README</a> recommends MLD by default except for very large distance matrices.</p>
+</section>
+
+<section class="exhibit wrap" aria-labelledby="e3">
+  <p class="num">Exhibit 3</p>
+  <h2 id="e3">Cutting cells at junctions halves the overlay boundary; the request-time gain is largest with small cells and costs twice the build time</h2>
+  <p class="sub">Junction cut ÷ edge cut at the same maximum cell size, median of eleven cities. Below 1.00 the junction cut is smaller or faster.</p>
+  <div id="cut-chart" class="chart" role="img" aria-label="Junction cut to edge cut ratios by measure and cell size"></div>
+  <p class="note">Unrounded travel seconds. An overlay splits the network into cells of at most 256, 1,024 or 4,096 junctions and stores travel times between each cell's boundary points; a request searches its two end cells plus those stored times. An edge cut makes both ends of every cut road segment boundary points; a junction cut places the shared junction on the boundary once. Median request time favours the junction cut in <span data-fact="p50_wins"></span> cities at the three cell sizes; small differences may be timing noise.</p>
+</section>
+
+<section class="exhibit wrap" aria-labelledby="e4">
+  <p class="num">Exhibit 4</p>
+  <h2 id="e4">On one Sejong trip, the junction cut halves the boundary work the search must do</h2>
+  <p class="sub">Junctions searched for one request (17.4-minute trip at the morning peak), cell size 256. Both overlays return the same certified travel time; plain Dijkstra searches 24,908 junctions for it. Over the six uniform-pair requests exported for Sejong, boundary work falls 51–52% while interior work changes by −18% to +31%.</p>
+  <figure><img src="sejong-query.png" width="1425" height="1488" alt="Two maps of Sejong. Left, edge cut: 933 boundary junctions and 283 interior junctions searched. Right, junction cut: 452 boundary and 287 interior junctions searched."></figure>
+  <p class="note">One disclosed request (index 2 of the fixed 1,000), not an average. Black dots: start and destination. Light orange: boundary junctions not searched. Road data © OpenStreetMap contributors; speeds from the Korea Road Network ETA dataset (KTDB, 2024).</p>
+</section>
+
+<section class="exhibit wrap" aria-labelledby="e5">
+  <p class="num">Exhibit 5</p>
+  <h2 id="e5">Up to <span data-fact="carry_max">99%</span> of a reported short-trip median disappeared when the previous request's cleanup was timed separately</h2>
+  <p class="sub">Median time of short (8-step) requests that follow a long request in the fixed benchmark order: the part that remains with cleanup timed separately, and the part that disappears. Share of reported time.</p>
+  <div id="order-chart" class="chart" role="img" aria-label="Share of reported time that is inherited cleanup"></div>
+  <p class="note">Search engines reuse memory between requests and clear what the previous request touched at the start of the next call. In the fixed order, short trips followed long ones and carried their cleanup. Reversing the order moved the cost to the other group; preparing each request separately removed it. All 36,000 answers matched in every condition and each request did identical search work. Reversal also changes cache and temporal context, so not every microsecond is attributed to cleanup. Mean cost per request hardly moves (Sejong plain Dijkstra 2,539 µs in fixed order, 2,394 µs with cleanup timed separately). Randomized order is the next experiment. Local Windows laptop measurements, three passes, not comparable with the city runner times.</p>
+</section>
+
+<section class="exhibit wrap" aria-labelledby="e6">
+  <p class="num">Exhibit 6</p>
+  <h2 id="e6">On the Maze-Hard reasoning benchmark, the best published learned result misses <span data-fact="maze_best">49</span> of 1,000 mazes by exact match; exact search misses none</h2>
+  <p class="sub">Wrong answers per 1,000 test mazes, exact match with the reference path. Learned results as published; where a paper reports several seeds or checkpoints, the best is shown.</p>
+  <div id="maze-chart" class="chart" role="img" aria-label="Wrong answers per 1,000 mazes by method"></div>
+  <p class="note">Maze-Hard (30×30 grids) is used to test neural reasoning models. Every maze has several shortest paths; the reference always takes the first by the move order Down, Left, Right, Up, a rule found on the training split and then confirmed on all 1,000 test mazes. This repository: <span data-fact="maze_us"></span> µs and <span data-fact="maze_heap"></span> of memory per maze on a laptop; <span data-fact="maze_cert_us"></span> µs and <span data-fact="maze_cert_heap"></span> with its proof of optimality. Under the looser any-shortest-path measure, LDT reports 99.8% and the hand-built LoopedWSP 100%. On SALSA-CLRS graph tasks the best published models without hints solve at most 0.4% of 1,600-node graphs fully; exact search solves all <span data-fact="salsa"></span> test graphs. The comparison sets the ceiling these benchmarks allow; it does not measure how well a model learns.</p>
+</section>
+
+<section class="wrap method" aria-labelledby="m">
+  <h2 id="m">Method and limits</h2>
+  <ul>
+    <li><b>Workload.</b> 1,000 fixed request pairs per city: half uniform random, half short random walks; 626 identical-endpoint and 596 unreachable pairs over the eleven cities are retained. Three passes; times are per-request means. Every answer checked against a certified shortest-path tree.</li>
+    <li><b>Engines.</b> Plain and bidirectional Dijkstra, two-level overlays under two cut models (this repository, Rust), and the <code>fast_paths</code> contraction hierarchy crate, which includes its path reconstruction in the timing.</li>
+    <li><b>Not measured.</b> Overlay re-weighting alone; multi-level overlays; memory of the searches and the hierarchy (overlay array sizes are retained); cost in currency. The study is one benchmark run per city on CI runners, with paired engine comparisons inside each city.</li>
+    <li><b>Data.</b> Korea Road Network ETA (CC BY-NC 4.0, weekday morning-peak speeds) and InstructOSM snapshots of about 50,000 junctions for London, New York and Tokyo. Benchmark code <a id="producer" href="https://github.com/symonyeal/Exact-Routing">cee8c6b</a>.</li>
+  </ul>
+  <p><a href="https://github.com/symonyeal/Exact-Routing/blob/main/results/metro.md">Full city tables</a> · <a href="https://github.com/symonyeal/Exact-Routing/blob/main/results/insights.md">Request-order study</a> · <a href="https://github.com/symonyeal/Exact-Routing/blob/main/docs/sparse.md">Overlay method</a> · <a href="https://github.com/symonyeal/Exact-Routing/blob/main/docs/grid.md">Maze method and proofs</a></p>
+</section>
+</main>
+
+<footer class="wrap foot">Exact Routing · MIT licence · figures generated by <code>scripts/page.py</code> from <code>results/</code> · <a href="https://github.com/symonyeal/Exact-Routing">github.com/symonyeal/Exact-Routing</a></footer>
+</body>
+</html>

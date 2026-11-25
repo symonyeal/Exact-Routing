@@ -44,16 +44,15 @@ For Sejong, U=256, native seconds, frozen query #3 (uniform pair 80,385 to 51,84
 | Graph overlay | 933 | 283 | 1,216 |
 | Hypergraph overlay | 452 | 287 | 739 |
 
-There are 481 fewer settled boundary nodes and four more interior nodes, a net saving of 477. For this query, almost all the saved work is at the interface. Plain Dijkstra settles 24,908 nodes. This is one disclosed query, not an average or a claim that interior work always stays constant. The viewer includes ten fixed presets and all 33 frozen aggregate comparisons.
+There are 481 fewer settled boundary nodes and four more interior nodes, a net saving of 477. For this query, almost all the saved work is at the interface. Plain Dijkstra settles 24,908 nodes. This is one disclosed query, not an average or a claim that interior work always stays constant. `partition_view` exports ten fixed presets; the results page shows this one.
 
-The diagrams color actual arc-cell assignments and show actual settled-node masks. Cell IDs are independent between models, and equal node bounds do not imply equal cell counts. The exporter checks its cell, boundary, overlay-arc and stored-array totals against the frozen build rows, certifies the full reference tree for each preset, and checks both query answers before it emits geometry.
+The figure draws actual boundary nodes and settled-node masks. Cell IDs are independent between models, and equal node bounds do not imply equal cell counts. The exporter checks its cell, boundary, overlay-arc and stored-array totals against the frozen build rows, certifies the full reference tree for each preset, and checks both query answers before it emits geometry.
 
 ## Reproduce and inspect
 
 ```text
 python scripts/query_order.py
-python scripts/insights.py --output maps/insights.js
-python scripts/serve_maps.py
+python scripts/page.py
 ```
 
 For the spatial case, after fetching the pinned Sejong graph:

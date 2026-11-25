@@ -1,41 +1,119 @@
 # Exact Routing
 
-Shortest paths solved exactly, each with a proof of optimality, on three public test beds:
+Rust engines for exact shortest-path queries, and a benchmark harness that measures what each engine
+costs per request. Every benchmark answer is checked against an independently certified optimal
+answer, so speed is never bought with a wrong route.
 
-- **Maze-Hard** (30×30 grids): all 1,000 held-out reference answers reproduced, in about 3 µs and at
-  most 2.3 KB of heap per maze on a laptop.
-- **SALSA-CLRS** (sparse random graphs up to 1,600 nodes): all 30,000 breadth-first and Dijkstra test
-  trees equal the reference and are certified; the original SALSA-CLRS paper's best neural models solve at most 0.4% of
-  the largest graphs.
-- **Metropolitan roads**: eight Korean city regions and London, New York and Tokyo snapshots, comparing
-  graph and hypergraph overlays, bidirectional search and Rust contraction hierarchies.
+**Results page: <https://symonyeal.github.io/Exact-Routing/>**
 
-## Maze-Hard
+## The question this answers
 
-Maze-Hard ([sapientinc/maze-30x30-hard-1k](https://huggingface.co/datasets/sapientinc/maze-30x30-hard-1k))
-is a standard test for neural reasoning models: 1,000 training and 1,000 test mazes of 30×30 cells, each
-with a start S, a goal G and an answer grid marking a shortest path. Models such as HRM and TRM read
-the maze and write the answer grid, and are usually scored on exact match with the reference. Every
-maze has several shortest paths, so exact match also requires the dataset's choice among them, which
-the dataset does not document.
+Navigation, delivery dispatch and ride-hailing price quotes send a stream of "fastest route from A to B"
+requests to a routing engine. Two properties of that engine reach the business: compute per request,
+and how quickly it absorbs new travel times (traffic, closures). Engines trade one against the other by
+precomputing structure on the road network.
 
-### The reference answer is a rule
+This repository measures five exact engines on the same 1,000 requests in each of eleven city networks
+(eight Korean regions; London, New York and Tokyo snapshots): 22,000 certified answers, none wrong.
+Half the requests are uniform random pairs and half short random walks; 626 have identical endpoints
+and 596 are unreachable, all retained.
 
-On the training split, 336 candidate tie-breaking rules were scored (`scripts/ties.py`,
-`results/ties.txt`). One rule, in two equivalent forms, reproduces all 1,000 training answers: **the
-reference is the lexicographically smallest shortest move sequence from S to G, with moves ordered
-Down < Left < Right < Up.** The next best rule reproduced 956. The rule was fixed before the test split
-was downloaded and then scored once.
+| Engine | Core-hours per billion requests | Mean request, µs | Full rebuild, s |
+| --- | ---: | ---: | ---: |
+| Plain Dijkstra | 624 (225–1,812) | 2,367 (831–7,747) | none |
+| Bidirectional Dijkstra | 509 (146–1,228) | 1,989 (549–4,611) | none |
+| Two-level overlay, edge cut | 46 (14–93) | 217 (63–495) | 3.5 (0.8–16.3) |
+| Two-level overlay, junction cut | 30 (10–57) | 147 (48–408) | 9.0 (1.7–47.9) |
+| Contraction hierarchy (`fast_paths` crate) | 3.7 (1.5–4.9) | 37 (17–59) | 0.8 (0.2–2.9) |
 
-| Split | Mazes | Exact match | Proved shortest | Rating = path cells |
-| --- | ---: | ---: | ---: | ---: |
-| train | 1,000 | 1,000 | 1,000 | 1,000 |
-| test | 1,000 | 1,000 | 1,000 | 1,000 |
+Median over the eleven cities, range in brackets. Integer-millisecond travel times, which the
+contraction hierarchy requires; one worker thread on a 4-vCPU Linux CI runner per city, so compare
+engines within a city. Core-hours = 10⁹ ÷ one-worker requests per second ÷ 3,600, from a separate
+throughput run that includes worker launch and checking every answer against the reference. Mean
+request time is the latency run's mean over three passes; it includes clearing the previous request's
+state (see below) and, for the contraction hierarchy, path reconstruction. Overlays: best of three
+cell sizes per city, chosen on the same throughput run. Overlay rebuild is the median of three trials;
+the contraction hierarchy was built once.
 
-[`docs/grid.md`](docs/grid.md) proves that greedy descent and first-discoverer breadth-first
-search both produce this path (Propositions 1 and 2), which is why both forms matched.
+What follows from the table:
 
-Published results on the same 1,000 test mazes:
+Percentages below are medians of the per-city reductions, so they differ from ratios of the table's
+medians (509 ÷ 624 gives 18% for bidirectional search, against a 31% median per city).
+
+- **Precomputation is the cost lever.** Overlays need 95–96% less compute per request than plain
+  Dijkstra; the contraction hierarchy 99.6% less.
+- **The contraction hierarchy was cheapest in all eleven cities**, at 13% of the best overlay's compute,
+  and a full rebuild took at most 2.9 seconds (Seoul, 328,610 junctions).
+- **Whether overlays win when travel times change is not settled here.** Production engines re-weight
+  overlay cells to take in traffic. OSRM's
+  [traffic notes](https://github.com/Project-OSRM/osrm-backend/wiki/Traffic) (last edited 2022) say MLD
+  "calculates routes more slowly than CH, but traffic imports are significantly faster"; customizable
+  route planning, described by
+  [its authors](https://www.microsoft.com/en-us/research/publication/customizable-route-planning-in-road-networks/)
+  in 2013 as the core of Bing Maps' engine, "can incorporate a new metric in less than a second". This
+  repository times partitioning and re-weighting together, and those full overlay rebuilds were slower
+  than the contraction hierarchy's (9.0 against 0.8 seconds at the median). At these network sizes a
+  contraction rebuild takes seconds; timing overlay re-weighting alone against it is the measurement
+  that would decide the case.
+- **Bidirectional search without precomputation** saves 31% at the median but cost more than plain
+  Dijkstra in two cities: Daegu (index 128, plain Dijkstra = 100) and Incheon (140). They are the two
+  cities with the most unreachable pairs (178 and 321 of 1,000); whether that causes it is untested.
+  By median latency, bidirectional search is faster than plain Dijkstra in Daegu.
+
+The [results page](https://symonyeal.github.io/Exact-Routing/) shows each city, the cut comparison, one
+search drawn on the Sejong map and the benchmark-order effect below.
+
+## Findings
+
+### Cutting overlay cells at junctions halves the boundary
+
+An overlay splits the network into cells of at most U junctions and stores travel times between each
+cell's boundary points; a request searches its two end cells plus those stored times. Cells come from
+recursive inertial-flow bisection under two cut models. An **edge cut** cuts road segments, so both
+ends of each cut segment become boundary points. A **junction cut** cuts at junctions shared by both
+sides (a bisection of the dual hypergraph), so each boundary junction counts once.
+
+Junction cut ÷ edge cut, median of eleven cities, unrounded travel seconds:
+
+| Cell bound U | Boundary points | Stored shortcuts | Junctions searched | Mean request | Median request | Build time | Junction cut has lower median |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 256 | 0.48 | 0.76 | 0.53 | 0.57 | 0.82 | 2.12 | 11 of 11 |
+| 1,024 | 0.47 | 0.78 | 0.72 | 0.66 | 0.91 | 2.23 | 8 of 11 |
+| 4,096 | 0.47 | 0.84 | 0.94 | 0.87 | 1.03 | 2.31 | 4 of 11 |
+
+The boundary halves at every cell size (49.8–56.5% fewer points over all 33 comparisons). The request
+gain shrinks as cells grow; with larger cells, work inside cells can offset the smaller boundary. The
+junction cut's flow network has twice the nodes, and its build takes about twice as long. It had the
+lower mean request time in all 33 comparisons. Small median differences may be timing noise; no
+confidence intervals are computed. On one Sejong request (U = 256) the junction cut searches 452
+boundary and 287 interior junctions against 933 and 283 for the edge cut; plain Dijkstra searches
+24,908. Over the six uniform-pair requests exported for Sejong, boundary work falls 51–52% while
+interior work changes by −18% to +31%.
+
+### Request order can dominate small timings
+
+The search engines reuse memory and clear the previous request's touched entries at the start of the
+next call. In the fixed benchmark order, short 8-step requests followed long uniform ones and inherited
+their cleanup: in Sejong, the reported plain-Dijkstra median for that group fell from 88.0 µs to
+0.70 µs (99%) once cleanup was timed separately. Reversing the order moved the cost to the other
+group; all 36,000 answers and every request's search work were identical across conditions. Reversal
+also changes cache and temporal context, so not every microsecond is attributed to cleanup. Medians
+over all requests move too (Sejong plain Dijkstra, local: 172 µs in fixed order, 14 µs with cleanup
+separated), while means hardly move (2,539 and 2,394 µs); the table above therefore reports means.
+Randomized order is the next experiment. Details: [`results/insights.md`](results/insights.md).
+
+### Learned solvers on public reasoning benchmarks
+
+[Maze-Hard](https://huggingface.co/datasets/sapientinc/maze-30x30-hard-1k) (1,000 test mazes,
+30×30) and [SALSA-CLRS](https://huggingface.co/datasets/SALSA-CLRS/SALSA-CLRS) test whether neural
+models learn to search. Exact search sets their ceiling.
+
+Maze-Hard scores exact match with a reference grid, and every maze has several shortest paths. On the
+training split, 336 candidate tie rules were scored (`scripts/ties.py`, `results/ties.txt`); one rule
+reproduces all 1,000 answers: **the lexicographically smallest shortest move sequence, with moves
+ordered Down < Left < Right < Up**. The next best rule reproduced 956. The rule was fixed before the
+test split was downloaded and then scored once: 1,000 of 1,000 test answers match, each proved shortest,
+and every rating equals the path's cell count. The dataset does not document its tie choice.
 
 | Method | Kind | Exact match | Any shortest path | Source |
 | --- | --- | ---: | ---: | --- |
@@ -50,16 +128,11 @@ Published results on the same 1,000 test mazes:
 | HRM | learned | 74.5%, as reported | — | [arXiv 2506.21734](https://arxiv.org/abs/2506.21734) |
 
 The LDT figure counts any shortest path, as stated by the LoopedWSP authors who cite it. The HRM source
-was not checked for its metric. The learned models must discover search from examples; this repository
-runs a search directly, so the table measures the benchmark's ceiling, not learning ability. It also
-shows that exact match on Maze-Hard is fully determined by one simple rule.
+was not checked for its metric. The table measures the benchmark's ceiling, not learning ability.
 
-### Speed and memory
-
-End to end, from the question string to the answer grid, on the 1,000 test mazes. One run on an Intel
-Core i5-1335U laptop restricted to its two performance cores; medians of paired per-maze times
-(`results/bench.md`). The intervals are bootstrap intervals over mazes within that run; between runs
-and cores the times vary by about 20%.
+Grid solver speed on the 1,000 test mazes, question string to answer grid, Intel Core i5-1335U laptop
+pinned to its two performance cores; medians of paired per-maze times, bootstrap 95% intervals over
+mazes within one run (`results/bench.md`). Times vary by about 20% between runs and cores.
 
 | Method | Exact | Optimal | Median µs | Time relative to wave (95% CI) | Peak heap |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -70,188 +143,117 @@ and cores the times vary by about 20%.
 | `pathfinding` crate, A* | 52 | 1,000 | 17.79 | 5.43 (5.38–5.53) | 55.3 KB |
 
 Peak heap is the maximum over the test mazes and includes the 900-byte answer grid. The queue search
-is a direct array-queue implementation in this repository with the same tie rule. A* finds shortest
-paths but breaks ties differently, so 52 answers match. On all 12 logical processors the wave solved
-between 0.57 and 0.90 million mazes per second across two runs.
+is a direct array-queue implementation in this repository with the same tie rule; A* finds shortest
+paths but breaks ties differently. On all 12 logical processors (unpinned) the wave solved 0.90 million
+mazes per second in the retained run. On generated n×n grids
+with the same wall density, one run had the wave ahead by 1.4–2.7 times from n = 30 to 512 and behind
+at n = 1,024 (5 mazes): its work grows with path length times grid area, a queue search's with area.
 
-On generated n×n grids with the same wall density, one run had the wave ahead by roughly 1.4 to 2.7
-times from n = 30 to n = 512 and behind at n = 1024 (5 mazes). Its work grows with path length times
-grid area, while a queue search grows with area alone.
+SALSA-CLRS asks for the breadth-first or Dijkstra parent of every node on sparse graphs of 16 to 1,600
+nodes, with models trained on at most 16. All 30,000 test trees equal the reference and are certified;
+mean search time at n = 1,600 is 39–156 µs for breadth-first search and 165–343 µs for Dijkstra
+(`results/salsa.jsonl`). The best models without hints in the 2023 paper
+([arXiv 2309.12253](https://arxiv.org/abs/2309.12253)) solve at most 0.4% of 1,600-node graphs fully. Details: [`docs/sparse.md`](docs/sparse.md).
 
-### How it works
-
-1. **Wave.** Cells are bits, two 30-cell rows per 64-bit word. Each breadth-first layer from G is
-   computed for a whole block of rows at once, four words per AVX2 instruction (Lee 1961).
-2. **Labels.** Each reached cell keeps its distance modulo 3 in two bits, enough to tell which
-   neighbour is one step closer to G (Akers 1967). The open-cell plane, labels and wave buffers take
-   840 bytes for a 30×30 maze.
-3. **Descent.** From S, take the first move in Down, Left, Right, Up order that brings the path one step
-   closer. This is the lexicographically smallest shortest path.
-4. **Certificate.** A potential p with p(G) = 0, |p(u) − p(v)| ≤ 1 across every open edge and
-   p(S) equal to the path length proves that no shorter path exists (linear-programming duality).
-   With p(S) = ∞, it proves that G is unreachable. `check` verifies both independently of the search;
-   it shares only the parser, which the tests check against the raw grid.
-
-The recent breakthroughs in single-source shortest paths concern real-valued weights; unit-cost
-grids already admit linear-time search, so the gains available here are constant factors in time
-and memory. [`docs/grid.md`](docs/grid.md) gives the formulation, proofs, costs and sources.
-
-## SALSA-CLRS
-
-[SALSA-CLRS](https://huggingface.co/datasets/SALSA-CLRS/SALSA-CLRS) (LoG 2023) tests whether neural
-algorithmic reasoners trained on graphs of at most 16 nodes generalize to larger sparse graphs:
-Erdős–Rényi, Watts–Strogatz and Delaunay families at 16 to 1,600 nodes, 1,000 test graphs per family
-and size. The answer is the parent of every node in the breadth-first or Dijkstra tree from a source.
-
-| Algorithm | Test graphs | Parents equal to reference | Trees certified | Best model in the 2023 paper at n = 1,600: graphs fully correct (ER / WS / Delaunay) |
-| --- | ---: | ---: | ---: | --- |
-| Breadth-first search | 15,000 | 100% | 15,000 | 0.4 / 0.0 / 0.0% |
-| Dijkstra | 15,000 | 100% | 15,000 | 0.0 / 0.0 / 0.0% |
-
-Breadth-first parents follow the CLRS rule, the smallest-index node one layer closer to the source,
-which a direction-optimizing search keeps in both directions. Mean search time at n = 1,600 is
-39–156 µs for breadth-first search and 165–343 µs for Dijkstra (`results/salsa.jsonl`). Each tree is
-verified by an independent check: no arc can shorten any distance, and every parent arc is tight and
-leads back to the source. [`docs/sparse.md`](docs/sparse.md) has the details and the neural
-baselines.
-
-## Korea roads: graph or hypergraph partition
-
-[Korea Road Network ETA](https://huggingface.co/datasets/CAMUS-LAB/data-road_network_eta) gives
-OpenStreetMap roads with observed speeds; arcs are weighted by weekday morning-peak travel time. For
-many point-to-point queries on one network, a two-level overlay (customizable route planning) splits
-the network into cells and stores in-cell distances between the cells' boundary nodes; a query searches
-only the cells of its two endpoints plus those stored distances, and stays exact.
-
-Cells come from recursive inertial-flow bisection under two cut models. The graph model cuts edges, so
-both ends of a cut edge become boundary nodes. The hypergraph model cuts nodes, shared by both sides,
-which is a bisection of the dual hypergraph under the connectivity metric and counts boundary nodes
-directly. At the same cell bound, the hypergraph model:
-
-| Region | Nodes | Boundary nodes | Overlay arcs | Nodes settled per query | Query time, paired | Build time |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Sejong | 85,647 | −51 to −54% | −23 to −29% | −44% to +4% | −5 to −50% | 1.0–1.8× |
-| Seoul | 328,610 | −52 to −53% | −16 to −24% | −16 to −51% | −25 to −52% | 1.6–2.2× |
-
-Ranges span cell bounds of 256, 1,024 and 4,096 nodes; the gains are largest for small cells. Every one
-of the 1,500 queries matches plain Dijkstra's distance under both models, and the best overlay answers
-20–22 times faster than plain Dijkstra (`results/roads.jsonl`; times from one paired laptop run, counts
-deterministic). [`docs/sparse.md`](docs/sparse.md) has the full table and the reasons.
-
-## Eleven-city comparison
-
-The expanded study checks 1,000 query cases per city under each of two weight metrics: **22,000
-certified graph/metric cases, with zero mismatches**. All six overlays agree between serial and
-parallel builds. [The full report](results/metro.md) includes every method, mean and tail latency,
-build times, throughput, CPU details and the [retained measurements](results/metro.jsonl).
-
-A hypergraph configuration has the lowest mean latency on native weights in every city. Median
-winners vary: bidirectional Dijkstra leads in New York and Tokyo. Contraction hierarchies have the
-lowest mean and median on every rounded-weight graph. These describe the fixed stateful query stream, including previous-query cleanup; the controlled diagnostic below separates that context. International CH timings are:
-
-| Snapshot | Nodes | Mean µs | Median µs | 95th percentile µs |
-| --- | ---: | ---: | ---: | ---: |
-| London | 50,301 | 28.95 | 16.71 | 68.20 |
-| New York | 50,306 | 49.00 | 35.31 | 116.56 |
-| Tokyo | 50,231 | 20.05 | 14.52 | 45.58 |
-
-These use positive rounded milliseconds and include CH's internal path reconstruction. Each city
-uses its recorded CI runner; method comparisons are paired within that city. Two-worker throughput
-is a median 1.97× the one-worker throughput across the 187 city/metric/method configurations
-(range 1.38–2.45×). Parallel cell customization gives small build gains; partitioning remains serial.
-
-The benchmark code is [`cee8c6b`](https://github.com/symonyeal/Exact-Routing/tree/cee8c6b56118351c690f68645f0da89717663d5d).
-Ten cities completed in [the original study](https://github.com/symonyeal/Exact-Routing/actions/runs/45282401948);
-the [Seoul retry and complete reconciliation](https://github.com/symonyeal/Exact-Routing/actions/runs/45417405041)
-passed with the same code and workload. The checked Hugging Face leaderboard endpoints returned no
-entries for these datasets; this study establishes a matched implementation comparison, not an external record.
-
-## Algorithm insights
+## How it works
 
 ```text
-python scripts/serve_maps.py
+pinned dataset revisions
+  scripts/fetch.py, salsa.py, roads.py, international.py   download, convert, hash   -> data/
+src/grid.rs      maze parser, word-parallel wave, descent, potential, certificate check
+src/graph.rs     sparse graph: direction-optimizing BFS, Dijkstra, shortest-path-tree certificate
+src/road.rs      validated road binary: coordinates, arcs, travel times
+src/overlay.rs   inertial-flow partition (edge or junction cut), two-level overlay, query
+src/query.rs     reusable bidirectional Dijkstra
+src/ch.rs        validated adapter to the fast_paths contraction hierarchy
+src/bin/metro.rs certified workload, paired latency, throughput, builds   -> results/metro.jsonl
+scripts/metro.py validate all eleven cities, write the report               -> results/metro.md
+scripts/page.py  normalize the retained results for the page                -> site/data.js
 ```
 
-The [local study](http://127.0.0.1:8765/) explains the measured behavior through three connected views:
+**Certificates.** A route is accepted only with proof that nothing shorter exists. For a road network,
+a shortest-path tree is valid when no arc can shorten any distance and every parent arc is tight and
+leads back to the source; `graph::check` verifies this without trusting the search. For a maze, a
+potential p with p(G) = 0, |p(u) − p(v)| ≤ 1 across every open edge and p(S) equal to the path length
+proves optimality by linear-programming duality; p(S) = ∞ proves the goal unreachable. `check`
+verifies it independently of the search and shares only the parser, which the tests check against
+the raw grid. The certificate is optional: the 3.28 µs timing is without it, 10.99 µs with it. Each
+city request is checked against a certified reference tree.
 
-- A controlled replay shows how each call clears the previous query's touched state. Reversing the
-  same pairs shifts that cost between groups, despite identical current-query settled/scanned counts.
-  The preparation condition retains its separately measured cost in the total.
-- Across 33 native-weight graph/hypergraph comparisons, median boundary reduction is 52.2%, while
-  the median ratio of mean query times is 1.52x and of p50 times is 1.09x. At U=256, hypergraph wins
-  all eleven p50 comparisons; at U=4096 it wins four. Observed small differences may be timing noise.
-- Synchronized geographic views show actual cell assignments, boundary nodes and settled-node masks
-  from Rust, with the same query and objective. They distinguish boundary work from interior work;
-  they do not simulate a search or offer a general route planner.
+**Maze solver.** Cells are bits, two 30-cell rows per 64-bit word. Each breadth-first layer from G is
+computed for a block of rows at once, four words per AVX2 instruction (Lee 1961). Each reached cell
+keeps its distance modulo 3 in two bits, enough to find the neighbour one step closer to G
+(Akers 1967); the open-cell plane, labels and wave buffers take 840 bytes. From S, the walk takes the
+first move in Down, Left, Right, Up order that brings it one step closer, which is the reference path.
+[`docs/grid.md`](docs/grid.md) proves this and gives the costs and sources. Recent single-source
+shortest-path advances concern real-valued weights; unit-cost grids already admit linear-time search,
+so the gains here are constant factors.
 
-[Findings and measurement limits](results/insights.md) accompany the retained diagnostic in
-`results/query-order.json`. The frozen metropolitan measurements are unchanged. Their group timing
-columns include prior-query cleanup and cannot be interpreted as isolated costs of those routes.
+## Reproduce
 
-Rebuild the processed HTML evidence with `python scripts/insights.py`. The aggregate plots also open
-from `maps/index.html` directly; live partition proofs use the localhost server, pinned local graph
-binaries and a cache in `data/insights/`. `python scripts/query_order.py` reruns the registered Sejong
-and London diagnostic with native weights and three passes. Its timings are local measurements,
-separate from the Linux city study; compiler, source hashes, binary hash and dirty-tree state are
-retained. The server checks frozen graph hashes and structural counts before drawing a partition.
-
-## Limits
-
-- The Maze-Hard tie rule is inferred from 2,000 of 2,000 answers; the dataset's generator code is not
-  public.
-- The original maze and two-region road timings come from one laptop. The expanded metropolitan
-  study uses Linux CI runners, with paired method comparisons within each city job. Node, arc and
-  settled counts are deterministic.
-- The grid certificate is optional and triples the time.
-- Grid reductions (dead-end pruning, corridor contraction), multilevel overlays, resource-constrained
-  paths, general network-flow benchmarks, multi-agent routing and convex extensions are not implemented.
-- Raw datasets are fetched separately at pinned revisions. Maze-Hard declares no licence;
-  SALSA-CLRS is Apache-2.0 and Korea roads is CC BY-NC 4.0. The scripts retain input hashes and source
-  metadata; international snapshots come from InstructOSM.
-
-## Project map
-
-| Path | Contents |
-| --- | --- |
-| `src/grid.rs` | grid parser, wave, descent, potential, certificate check |
-| `src/bin/maze.rs` | scores Maze-Hard CSV files: certified, exact and rating counts per file |
-| `tests/grid.rs` | every wall pattern of eight shapes up to 4×4 against exhaustive path enumeration (every S–G pair up to 9 cells, one random pair above), wide grids against queue search, certificate mutations |
-| `benches/grid.rs` | timing, peak heap and generated-grid scaling against the rivals |
-| `src/graph.rs` | sparse graphs: direction-optimizing breadth-first search, Dijkstra, shortest-path-tree certificate |
-| `src/overlay.rs` | inertial-flow partitions under the graph and hypergraph cut models, two-level overlay, queries |
-| `src/query.rs`, `src/ch.rs` | reusable bidirectional Dijkstra and a validated adapter to Rust contraction hierarchies |
-| `src/road.rs`, `src/bin/metro.rs` | validated road inputs, certified query workloads, paired latency and parallel throughput |
-| `src/bin/salsa.rs` | scores SALSA-CLRS sets: node and graph accuracy, certified trees |
-| `src/bin/roads.rs` | road queries: plain Dijkstra against overlays of both models |
-| `tests/graph.rs`, `tests/overlay.rs` | searches against Bellman–Ford and relaxation oracles, certificate mutations; overlay distances against Dijkstra |
-| `scripts/fetch.py` | downloads the pinned Maze-Hard CSVs into `data/` and checks their hashes |
-| `scripts/ties.py` | scores the 336 tie-breaking rules on the training split |
-| `scripts/salsa.py`, `scripts/roads.py` | convert SALSA-CLRS test sets and Korea road regions into `data/` |
-| `scripts/international.py`, `scripts/metro.py` | pinned international GraphML conversion, benchmark validation and metropolitan reports |
-| `maps/`, `scripts/serve_maps.py`, `src/bin/partition_view.rs` | algorithm insights, validated partition geometry and actual query footprints |
-| `scripts/insights.py`, `src/bin/query_order.rs`, `scripts/query_order.py` | reproducible analysis and controlled query-order diagnostic |
-| `.github/workflows/metros.yml` | eleven-city study: eight Korean regions plus London, New York and Tokyo snapshots |
-| `docs/` | `grid.md` (maze proofs and costs), `sparse.md` (SALSA-CLRS, overlays, cut models) |
-| `results/` | `eval.jsonl` (checked in CI), `bench.md`, `ties.txt`, `salsa.jsonl`, `roads.jsonl`, `metro.jsonl`, `metro.md` |
+Rust 1.87 or later; Python 3 with numpy (SALSA-CLRS, international snapshots, figure), pandas and
+pyarrow (Korea roads), matplotlib (figure).
 
 ```text
-python scripts/fetch.py
+python scripts/fetch.py                       # Maze-Hard CSVs, hash-checked
 cargo test --release
 cargo run --release --bin maze -- data/train.csv data/test.csv
 cargo bench --bench grid -- data/test.csv
 python scripts/ties.py train
-python scripts/salsa.py dijkstra          # needs numpy; about 2 GB of text for all 15 sets
+python scripts/salsa.py dijkstra              # about 2 GB of text for all 15 sets
 cargo run --release --bin salsa -- dijkstra data/salsa/dijkstra/*.txt
-python scripts/roads.py sejong            # needs numpy, pandas, pyarrow
+python scripts/roads.py sejong
 cargo run --release --bin roads -- data/roads/sejong.bin 1000
-python scripts/international.py london large  # needs numpy; published travel times become seconds
+python scripts/international.py london large  # published travel minutes become seconds
 cargo build --release --bin metro
 python scripts/metro.py run data/roads/london-large.bin results/metro/london-large.jsonl
+python scripts/metro.py report results/metro.jsonl --output results/metro.md
+python scripts/query_order.py                 # request-order diagnostic, local
+python scripts/page.py                        # site/data.js from results/
+python scripts/figure.py                      # site/sejong-query.png, needs data/roads/sejong.bin
 ```
 
-The metropolitan benchmark compares native seconds separately from rounded integer milliseconds,
-which the CH library requires. Every sampled answer uses a certified reference tree. Single-thread
-latency, preprocessing and parallel throughput have separate measurements; see
-[`docs/sparse.md`](docs/sparse.md#reproducible-metropolitan-study) for the fixed workload and scope.
+The eleven-city study runs in `.github/workflows/metros.yml` from benchmark code
+[`cee8c6b`](https://github.com/symonyeal/Exact-Routing/tree/cee8c6b56118351c690f68645f0da89717663d5d):
+ten cities in [run 45282401948](https://github.com/symonyeal/Exact-Routing/actions/runs/45282401948),
+Seoul and the full reconciliation in
+[run 45417405041](https://github.com/symonyeal/Exact-Routing/actions/runs/45417405041), same code and
+workload. Later commits did not rerun the city timings. Two-worker throughput is a median 1.97× the
+one-worker figure over 187 city, metric and engine configurations (1.38–2.45×); parallel cell
+customization gives small build gains and partitioning stays serial. CI checks formatting, lints, all
+tests, the Maze-Hard scores against `results/eval.jsonl`, the city report and the page data against
+rebuilds, SALSA-CLRS and Sejong. Protocol: [`docs/sparse.md`](docs/sparse.md).
 
-Rust 1.87 or later. MIT licence.
+## Limits
+
+- Overlay re-weighting alone, multilevel overlays, memory of the searches and the contraction
+  hierarchy, and cost in currency are not measured (overlay array sizes are in `metro.jsonl`). Customizable contraction hierarchies and hub labels are not implemented.
+- One benchmark run per city on CI runners whose processors differ; engine comparisons are paired
+  within each city. The maze and two-region road timings come from one laptop. Node, arc and settled
+  counts are deterministic.
+- The request-order diagnostic is a local Windows measurement and is not comparable with the Linux city
+  times; reversal also changes cache and temporal context.
+- The Maze-Hard tie rule is inferred from 2,000 of 2,000 answers; the dataset's generator code is not
+  public. The grid certificate is optional and triples the time.
+- Grid reductions (dead-end pruning, corridor contraction), resource-constrained paths, general
+  network-flow benchmarks, multi-agent routing and convex extensions are not implemented.
+- The checked Hugging Face leaderboard endpoints had no entries for these datasets; this is a matched
+  implementation comparison, not an external record.
+- Raw data is fetched at pinned revisions. Maze-Hard declares no licence; SALSA-CLRS is Apache-2.0;
+  Korea Road Network ETA is CC BY-NC 4.0; the international snapshots come from InstructOSM (about
+  50,000 junctions each, not whole metropolitan areas).
+
+## Repository layout
+
+| Path | Contents |
+| --- | --- |
+| `src/` | engines and certificate checks (see How it works) |
+| `src/bin/` | `maze`, `salsa`, `roads`, `metro` scorers; `partition_view` and `query_order` diagnostics |
+| `tests/` | grids against exhaustive path enumeration and queue search; graph searches against Bellman–Ford; overlays against Dijkstra; certificate mutations |
+| `benches/grid.rs` | maze timing, peak heap and generated-grid scaling against the rivals |
+| `scripts/` | dataset converters, metro runner and report, tie-rule search, page data and figure |
+| `results/` | retained measurements: `eval.jsonl`, `bench.md`, `ties.txt`, `salsa.jsonl`, `roads.jsonl`, `metro.jsonl`, `metro.md`, `query-order.json`, `insights.md` |
+| `docs/` | `grid.md` (maze proofs and costs), `sparse.md` (SALSA-CLRS, overlays, cut models, city protocol) |
+| `site/` | the results page; `data.js` and `sejong-query.png` are generated |
+
+MIT licence.

@@ -177,20 +177,19 @@ model scores; SALSA evaluates reasoning accuracy and InstructOSM supplies instru
 compares a published Rust routing implementation on matching inputs and hardware; it establishes no
 external speed record.
 
-## Inspect the algorithm's work
+## Results page
 
-`python scripts/serve_maps.py` opens the local HTML study. Its charts are derived from the frozen
-eleven-city results; `python scripts/insights.py --output maps/insights.js` rebuilds them without
-downloading graphs. They show the boundary/latency crossover, workload cost distributions and the
-separate controlled replay. They also work when opening `maps/index.html` directly.
+`site/` is the published results page. `python scripts/page.py` writes `site/data.js` from
+`results/metro.jsonl`, `results/query-order.json`, `results/eval.jsonl`, `results/salsa.jsonl` and
+`results/bench.md`; it validates the eleven-city population and the query-order diagnostic first, and
+CI fails when the committed file differs from a rebuild. `site/app.js` formats these values and takes
+medians and ratios of them; headline figures in the page text are filled from the same data.
 
-The spatial comparison requires the local server and the pinned road binary. `/api/partition` runs
-`partition_view` for the selected city, cell bound and metric, then caches the validated output in
-`data/insights/`. The exporter checks cell, boundary, overlay-arc and array-byte counts against the
-frozen benchmark before exporting actual arc-cell assignments, boundary nodes and ten frozen search
-traces. Every trace uses a certified reference tree; both overlay distances are checked. Synchronized
-views distinguish settled boundary and interior nodes and display their counts beside the geometry.
-No arbitrary route query is needed to inspect this evidence.
+`python scripts/figure.py` draws `site/sejong-query.png`, one Sejong query on both overlays at
+U = 256. It runs `partition_view`, which checks cell, boundary, overlay-arc and array-byte counts
+against the frozen build rows and certifies the query against a full Dijkstra tree before it exports
+the cell assignments, boundary nodes and settled-node masks. Needs the converted Sejong graph,
+numpy and matplotlib.
 
 ## Limits
 
