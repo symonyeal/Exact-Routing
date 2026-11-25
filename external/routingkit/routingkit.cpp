@@ -1,17 +1,20 @@
-// RoutingKit's CCH on the graph, metrics and workload of one `scale partial` run: an external
-// reference for this repository's CCH, outside the ranking.
+// RoutingKit's CCH or CH on the graph, metrics and workload of one `scale partial` or `scale export`
+// run: the external engines compared with this repository's.
 //
-// Usage: cch INPUT, where INPUT is the file `scale partial` writes (layout in src/bin/scale.rs).
-// RoutingKit (https://github.com/RoutingKit/RoutingKit, BSD-2-Clause) is built in CI at the commit
-// pinned in .github/workflows/scale.yml. Its own inertial-flow nested dissection orders the nodes.
+// Usage: routingkit INPUT cch|ch, where INPUT is the file `scale` writes (layout in
+// src/bin/scale.rs). RoutingKit (https://github.com/RoutingKit/RoutingKit, BSD-2-Clause) is built in
+// CI at the commit pinned in .github/workflows/scale.yml.
 //
-// For three passes over the eight weekday metrics: customize on one thread and on four (wall
-// seconds), then answer every query with its node path, each distance checked against the
-// certified distance in INPUT. For
-// three passes over the synthetic updates: customize the source metric, then time a partial
+// Every answer returns its node path, and each distance is checked against the certified distance
+// in INPUT. ch: for three passes over the eight weekday metrics, build a contraction hierarchy
+// (RoutingKit's own witness-search contraction, rebuilt per metric), then answer every query.
+// cch: its own inertial-flow nested dissection orders the nodes once. For three passes over the
+// eight weekday metrics: customize on one thread and on four (wall seconds), then answer every
+// query. For three passes over the synthetic updates: customize the source metric, then time a partial
 // customization over the changed arcs and a full one of the same weights; the first ten answers
 // of the partial metric must equal those of the full one. One JSON row per measurement on stdout.
 
+#include <routingkit/contraction_hierarchy.h>
 #include <routingkit/customizable_contraction_hierarchy.h>
 #include <routingkit/nested_dissection.h>
 
@@ -48,8 +51,8 @@ struct Reader {
 };
 
 int main(int argc, char** argv) {
-    if (argc != 2) {
-        std::fprintf(stderr, "usage: cch INPUT\n");
+    if (argc != 3 || (std::strcmp(argv[2], "cch") && std::strcmp(argv[2], "ch"))) {
+        std::fprintf(stderr, "usage: routingkit INPUT cch|ch\n");
         return 2;
     }
     std::ifstream in(argv[1], std::ios::binary);
@@ -70,6 +73,37 @@ int main(int argc, char** argv) {
         u.to = r.one<unsigned>();
         u.f = r.one<double>();
         u.arcs = r.many<unsigned>(r.one<uint64_t>());
+    }
+
+    if (!std::strcmp(argv[2], "ch")) {
+        uint64_t nodes = 0;
+        for (int pass = 0; pass < 3; ++pass) {
+            for (int j = 0; j < 8; ++j) {
+                double t = now();
+                const auto ch = ContractionHierarchy::build(n, tail, head, metric[j]);
+                const double build = now() - t;
+                ContractionHierarchyQuery query(ch);
+                t = now();
+                uint64_t wrong = 0;
+                for (uint64_t i = 0; i < q; ++i) {
+                    query.reset().add_source(pairs[2 * i]).add_target(pairs[2 * i + 1]).run();
+                    unsigned d = query.get_distance();
+                    if (d != inf_weight) nodes += query.get_node_path().size();
+                    wrong += (d == inf_weight ? UINT32_MAX : d) != ref[j][i];
+                }
+                const double query_s = now() - t;
+                if (wrong) {
+                    std::fprintf(stderr, "RoutingKit CH: %llu wrong on slot %d\n", (unsigned long long)wrong, j);
+                    return 1;
+                }
+                std::printf("{\"kind\":\"routingkit_ch_slot\",\"commit\":\"%s\",\"pass\":%d,\"slot\":%d,"
+                            "\"build_s\":%.9g,\"queries\":%llu,\"query_s\":%.9g,\"checked\":%llu,\"wrong\":0}\n",
+                            ROUTINGKIT_COMMIT, pass, j, build, (unsigned long long)q, query_s, (unsigned long long)q);
+                std::fflush(stdout);
+            }
+        }
+        std::fprintf(stderr, "RoutingKit CH: %llu path nodes\n", (unsigned long long)nodes);
+        return 0;
     }
 
     double t = now();

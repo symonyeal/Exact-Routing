@@ -2,7 +2,7 @@
 summarize.
 
   python scripts/scale.py fetch SIZE                  data/scale/SIZE.{bin,metrics.bin,meta.json}
-  python scripts/scale.py run SIZE MODE OUT [options] one shard: time, partial, memory or routingkit
+  python scripts/scale.py run SIZE MODE OUT [options] one shard: time, partial, memory, routingkit or routingkit-ch
   python scripts/scale.py report DIR                  results/scale.jsonl and results/scale.md
 
 Sizes: the eight cities and Gyeongbuk (one province) from their region files; the union of Seoul,
@@ -159,7 +159,10 @@ def run(size, mode, output, args):
             rows += stream([exe("scale"), road, cols, "memory", min(20, int(args.queries)), e], output, append=bool(rows))
         return finish(rows, size, meta, output)
     else:
-        cmd = [str(REPO / "external" / "routingkit" / "cch"), rk]
+        if mode == "routingkit-ch" and not rk.exists():
+            # Certified weekday distances only; the partial study is not needed for the CH.
+            stream([exe("scale"), road, cols, "export", args.queries, args.threads, rk], output.with_suffix(".export"))
+        cmd = [REPO / "external" / "routingkit" / "routingkit", rk, "cch" if mode == "routingkit" else "ch"]
     finish(stream([str(c) for c in cmd], output), size, meta, output)
 
 
@@ -312,11 +315,14 @@ def updates(rows):
 
 
 def routingkit(rows):
-    """One summary row of the RoutingKit reference for a size, measured as `engines` measures ours;
-    none when the size has no RoutingKit rows."""
+    """One summary row of RoutingKit's engines for a size, measured as `engines` measures ours: its
+    CCH (preparation, customization on one and four threads, request cost, partial ratios) and its
+    CH (rebuild per metric, request cost); none when the size has no RoutingKit rows."""
     prep = [r for r in rows if r["kind"] == "routingkit_prepare"]
-    if not prep:
-        return []
+    ch = [r for r in rows if r["kind"] == "routingkit_ch_slot"]
+    if not prep or len(ch) != PASSES * SLOT_COUNT or any(r["wrong"] for r in ch):
+        raise ValueError("incomplete or wrong RoutingKit population")
+    rate = lambda s: sum(r["query_s"] for r in s) / sum(r["queries"] for r in s) * 1e9 / 3600
     slots = [r for r in rows if r["kind"] == "routingkit_slot"]
     ups = [r for r in rows if r["kind"] == "routingkit_update"]
     if len(slots) != PASSES * SLOT_COUNT or len(ups) != PASSES * 4 * len(F) or any(r["wrong"] for r in slots + ups):
@@ -329,7 +335,10 @@ def routingkit(rows):
              "customize4_wall_s": per_slot("customize4_wall_s"),
              "q": sum(r["query_s"] for r in slots) / sum(r["queries"] for r in slots) * 1e9 / 3600,
              "queries": sum(r["queries"] for r in slots), "query_s": sum(r["query_s"] for r in slots),
-             "checked": sum(r["checked"] for r in slots),
+             "checked": sum(r["checked"] for r in slots) + sum(r["checked"] for r in ch),
+             "ch_build_s": float(np.mean([np.median([r["build_s"] for r in ch if r["slot"] == s])
+                                          for s in range(SLOT_COUNT)])),
+             "ch_q": rate(ch),
              "ratio_by_f": {str(f): float(np.mean([r["partial_s"] / r["full_s"] for r in ups if r["target_f"] == f]))
                             for f in F}}]
 
@@ -343,13 +352,15 @@ def plan(selected="all"):
         q = "200" if size == "korea" else "1000"
         every, slots = "0,1,2", "0,1,2,3,4,5,6,7"
         if size in CITIES + ("gyeongbuk",):
-            out.append({"name": size, "size": size, "modes": "time,partial,routingkit,memory", "passes": every,
+            out.append({"name": size, "size": size, "modes": "time,partial,routingkit,routingkit-ch,memory", "passes": every,
                         "slots": slots, "queries": q})
             continue
         halves = ("0,1,2,3", "4,5,6,7") if size == "korea" else (slots,)
         out += [{"name": f"{size}-time-{p}-{h[0]}", "size": size, "modes": "time", "passes": str(p), "slots": h,
                  "queries": q} for p in range(PASSES) for h in halves]
         out += [{"name": f"{size}-partial", "size": size, "modes": "partial,routingkit", "passes": every,
+                 "slots": slots, "queries": q},
+                {"name": f"{size}-routingkit-ch", "size": size, "modes": "routingkit-ch", "passes": every,
                  "slots": slots, "queries": q},
                 {"name": f"{size}-memory", "size": size, "modes": "memory", "passes": every, "slots": slots,
                  "queries": q}]
@@ -487,12 +498,12 @@ def markdown(rows):
                      f"{100 * r['dataset_f'][0]:.3g}–{100 * r['dataset_f'][1]:.3g}% |")
     rk = [r for r in rows if r["kind"] == "routingkit"]
     if rk:
-        lines += ["", "## RoutingKit CCH (external reference, not ranked)", "",
-                  "| Size | Prepare, s | Customize 1 thread, s | 4 threads wall, s | Query, µs | Checked |",
-                  "| --- | ---: | ---: | ---: | ---: | ---: |"]
+        lines += ["", "## RoutingKit (C++)", "",
+                  "| Size | CCH prepare, s | CCH customize, s | 4 threads wall, s | CCH q | CH rebuild, s | CH q | Checked |",
+                  "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
         for r in rk:
             lines.append(f"| {r['size']} | {r['prepare_s']:.3g} | {r['customize_s']:.3g} | {r['customize4_wall_s']:.3g} | "
-                         f"{1e6 * r['query_s'] / r['queries']:.3g} | {r['checked']} |")
+                         f"{r['q']:.3g} | {r['ch_build_s']:.3g} | {r['ch_q']:.3g} | {r['checked']} |")
     return "\n".join(lines) + "\n"
 
 
@@ -503,7 +514,7 @@ def main():
     f.add_argument("size", choices=SIZES)
     r = sub.add_parser("run")
     r.add_argument("size", choices=SIZES)
-    r.add_argument("mode", choices=("time", "partial", "memory", "routingkit"))
+    r.add_argument("mode", choices=("time", "partial", "memory", "routingkit", "routingkit-ch"))
     r.add_argument("output", type=Path)
     r.add_argument("--queries", default="1000")
     r.add_argument("--passes", default="0,1,2")

@@ -69,7 +69,7 @@ jobs:
           python-version: '3.12'
       - run: pip install numpy pandas pyarrow
       - run: cargo build --release --locked --bin scale
-      - name: Build RoutingKit at the pinned commit and its CCH driver
+      - name: Build RoutingKit at the pinned commit and its driver
         if: ${{ contains(matrix.modes, 'routingkit') }}
         run: |
           git clone --quiet https://github.com/RoutingKit/RoutingKit.git /tmp/RoutingKit
@@ -78,8 +78,8 @@ jobs:
           head -3 /tmp/RoutingKit/LICENSE
           make -C /tmp/RoutingKit -j"$(nproc)" lib/libroutingkit.a
           g++ -std=c++17 -O3 -march=native -fopenmp -DROUTINGKIT_COMMIT="\"$ROUTINGKIT\"" \
-            -I/tmp/RoutingKit/include external/routingkit/cch.cpp /tmp/RoutingKit/lib/libroutingkit.a \
-            -o external/routingkit/cch
+            -I/tmp/RoutingKit/include external/routingkit/routingkit.cpp /tmp/RoutingKit/lib/libroutingkit.a \
+            -o external/routingkit/routingkit
       - name: Fetch the pinned network with all slot speeds
         run: python scripts/scale.py fetch "${{ matrix.size }}"
       - name: Run the shard

@@ -3,6 +3,7 @@
 //! Usage
 //!   scale ROAD METRICS time QUERIES PASSES SLOTS THREADS
 //!   scale ROAD METRICS partial QUERIES THREADS OUT
+//!   scale ROAD METRICS export QUERIES THREADS OUT
 //!   scale ROAD METRICS memory QUERIES ENGINE
 //! METRICS holds 17 travel-time columns over ROAD's arcs: free flow, then the eight weekday and the
 //! eight weekend slots in the order of `scripts/scale.py`. Every cost is max(1, round(1000 ·
@@ -26,6 +27,8 @@
 //! query is answered from the partial metric and checked; on synthetic metrics the first CHECK
 //! queries, in pass 0, against trees computed on that metric. OUT receives the graph, metrics,
 //! workload, reference distances and synthetic change sets for the RoutingKit reference.
+//!
+//! export. Only OUT, with certified distances on the weekday metrics: input for RoutingKit's CH.
 //!
 //! memory. Peak resident memory (Linux VmHWM) after preparing ENGINE, bringing it to the am_peak
 //! metric and answering QUERIES checked queries; ENGINE `none` loads the graphs alone.
@@ -281,7 +284,7 @@ fn list(s: &str) -> Vec<usize> {
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let usage = "usage: scale ROAD METRICS (time QUERIES PASSES SLOTS THREADS | partial QUERIES \
-                 THREADS OUT | memory QUERIES ENGINE)";
+                 THREADS OUT | export QUERIES THREADS OUT | memory QUERIES ENGINE)";
     assert!(args.len() >= 5, "{usage}");
     let road = fs::read(&args[0]).expect("read road binary");
     let cols = fs::read(&args[1]).expect("read metrics");
@@ -301,9 +304,18 @@ fn main() {
                 args[6].parse().unwrap(),
             );
         }
-        "partial" => {
+        "partial" | "export" => {
             assert!(args.len() == 6, "{usage}");
-            partial(&road, &cols, &xy, q, args[4].parse().unwrap(), &args[5]);
+            let study = args[2] == "partial";
+            partial(
+                &road,
+                &cols,
+                &xy,
+                q,
+                args[4].parse().unwrap(),
+                &args[5],
+                study,
+            );
         }
         "memory" => {
             let e = ENGINES.iter().position(|&x| x == args[4]);
@@ -503,15 +515,26 @@ fn synthetic(diff: &[usize], m: usize, a: usize, f: f64) -> Vec<usize> {
     d
 }
 
-fn partial(road: &[u8], cols: &[u8], xy: &[(f64, f64)], q: usize, threads: usize, out: &str) {
+/// The partial-update study, or with `study` false only the RoutingKit input (`export`), which
+/// needs certified distances on the weekday metrics alone.
+fn partial(
+    road: &[u8],
+    cols: &[u8],
+    xy: &[(f64, f64)],
+    q: usize,
+    threads: usize,
+    out: &str,
+    study: bool,
+) {
     let gs: Vec<Graph> = load(road, cols, |_| true).into_iter().flatten().collect();
     let pairs = pairs(&gs[0], q);
     let t0 = Instant::now();
+    let last = if study { 2 * SLOTS } else { SLOTS };
     let refs: Vec<Vec<f64>> = gs
         .iter()
         .enumerate()
         .map(|(j, g)| {
-            if j == 0 {
+            if j == 0 || j > last {
                 Vec::new()
             } else {
                 reference(g, &pairs, threads)
@@ -519,18 +542,16 @@ fn partial(road: &[u8], cols: &[u8], xy: &[(f64, f64)], q: usize, threads: usize
         })
         .collect();
     let reference_s = t0.elapsed().as_secs_f64();
-    let reachable: Vec<usize> = refs[1..]
+    let reachable: Vec<usize> = refs[1..=last]
         .iter()
         .map(|d| d.iter().filter(|d| d.is_finite()).count())
         .collect();
     graph_row(
         &gs[0],
         &pairs,
-        json!({"mode":"partial", "threads":threads, "certified_trees":q * 2 * SLOTS,
+        json!({"mode":if study {"partial"} else {"export"}, "threads":threads, "certified_trees":q * last,
         "reference_s":reference_s, "reachable":reachable}),
     );
-    let p = prepare(|e| e == 4, &gs[0], xy);
-    let cch = p.cch.as_ref().unwrap();
     let (m, ups) = (gs[0].weights().len(), updates());
     let sets: Vec<Vec<usize>> = ups
         .iter()
@@ -540,6 +561,11 @@ fn partial(road: &[u8], cols: &[u8], xy: &[(f64, f64)], q: usize, threads: usize
         })
         .collect();
     write_routingkit(out, &gs, xy, &pairs, &refs, &ups, &sets);
+    if !study {
+        return;
+    }
+    let p = prepare(|e| e == 4, &gs[0], xy);
+    let cch = p.cch.as_ref().unwrap();
     let mut ws = cch.workspace();
     let mut z = 20261127u64;
     for pass in 0..3 {

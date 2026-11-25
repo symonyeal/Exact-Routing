@@ -95,7 +95,7 @@ class Validation(unittest.TestCase):
                      for p in map(int, x["passes"].split(",")) for s in map(int, x["slots"].split(","))]
             self.assertEqual(sorted(cells), [(p, s) for p in range(3) for s in range(8)], size)
             modes = {m for x in scale.plan(size) for m in x["modes"].split(",")}
-            self.assertEqual(modes, {"time", "partial", "routingkit", "memory"}, size)
+            self.assertEqual(modes, {"time", "partial", "routingkit", "routingkit-ch", "memory"}, size)
 
 
 class Union(unittest.TestCase):
