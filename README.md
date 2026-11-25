@@ -182,7 +182,7 @@ Limits of this study:
   are CI artifacts; [`results/traffic.jsonl`](results/traffic.jsonl) keeps the summaries with each
   raw file's SHA-256 and the source URL, revision, licence and hashes. The Korea Road Network ETA
   data is CC BY-NC 4.0: these results are for non-commercial use.
-- Data: [`results/traffic.md`](results/traffic.md); workflow `.github/workflows/traffic.yml`, run
+- Data: [`results/traffic.md`](results/traffic.md); workflow `traffic.yml` (archived), run
   [45659518061](https://github.com/symonyeal/Exact-Routing/actions/runs/45659518061) at commit
   815df09.
 
@@ -232,7 +232,7 @@ Randomized order is the next experiment. Details: [`results/insights.md`](result
 models learn to search. Exact search sets their ceiling.
 
 Maze-Hard scores exact match with a reference grid, and every maze has several shortest paths. On the
-training split, 336 candidate tie rules were scored (`scripts/ties.py`, `results/ties.txt`); one rule
+training split, 336 candidate tie rules were scored (search archived; `results/ties.txt`); one rule
 reproduces all 1,000 answers: **the lexicographically smallest shortest move sequence, with moves
 ordered Down < Left < Right < Up**. The next best rule reproduced 956. The rule was fixed before the
 test split was downloaded and then scored once: 1,000 of 1,000 test answers match, each proved shortest,
@@ -282,18 +282,20 @@ mean search time at n = 1,600 is 39–156 µs for breadth-first search and 165�
 
 ```text
 pinned dataset revisions
-  scripts/fetch.py, salsa.py, roads.py, international.py   download, convert, hash   -> data/
+  scripts/fetch.py, salsa.py, scale.py fetch               download, convert, hash   -> data/
 src/grid.rs      maze parser, word-parallel wave, descent, potential, certificate check
 src/graph.rs     sparse graph: direction-optimizing BFS, Dijkstra, shortest-path-tree certificate
 src/road.rs      validated road binary: coordinates, arcs, travel times
 src/overlay.rs   inertial-flow partition (edge or junction cut), two-level overlay, query
+src/levels.rs    nested junction-cut partition, multilevel overlay, query
 src/query.rs     reusable bidirectional Dijkstra
 src/ch.rs        validated adapter to the fast_paths contraction hierarchy, rebuilt or fixed-order
-src/cch.rs       customizable contraction hierarchy: order, elimination, customization, query, paths
-src/bin/traffic.rs nine travel-time sets: certified costs, regret, update and request timing
-scripts/traffic.py fetch slot speeds, run, break-even and regret summaries -> results/traffic.*
-src/bin/metro.rs certified workload, paired latency, throughput, builds   -> results/metro.jsonl
-scripts/metro.py validate all eleven cities, write the report               -> results/metro.md
+src/cch.rs       customizable contraction hierarchy: order, elimination, serial, threaded,
+                 partial and perfect customization, query, paths
+src/bin/scale.rs sharded timing, partial-update study, memory pass        -> results/scale/
+scripts/scale.py fetch sizes, run shards, growth, break-even, crossover   -> results/scale.*
+scripts/traffic.py break-even and regret summaries of the retained traffic runs -> results/traffic.*
+scripts/metro.py validate the retained eleven-city results, write the report -> results/metro.md
 scripts/page.py  normalize the retained results for the page                -> site/data.js
 ```
 
@@ -317,42 +319,32 @@ so the gains here are constant factors.
 
 ## Reproduce
 
-Rust 1.87 or later; Python 3 with numpy (SALSA-CLRS, international snapshots, figure), pandas and
-pyarrow (Korea roads), matplotlib (figure).
+Rust 1.87 or later; Python 3 with numpy, pandas and pyarrow.
 
 ```text
 python scripts/fetch.py                       # Maze-Hard CSVs, hash-checked
 cargo test --release
 cargo run --release --bin maze -- data/train.csv data/test.csv
 cargo bench --bench grid -- data/test.csv
-python scripts/ties.py train
 python scripts/salsa.py dijkstra              # about 2 GB of text for all 15 sets
 cargo run --release --bin salsa -- dijkstra data/salsa/dijkstra/*.txt
-python scripts/roads.py sejong
-cargo run --release --bin roads -- data/roads/sejong.bin 1000
-python scripts/international.py london large  # published travel minutes become seconds
-cargo build --release --bin metro
-python scripts/metro.py run data/roads/london-large.bin results/metro/london-large.jsonl
+python scripts/scale.py fetch sejong          # 17 travel-time sets for one size
+cargo build --release --bin scale
+python scripts/scale.py run sejong time results/scale/sejong-time.jsonl
+python scripts/scale.py report results/scale  # results/scale.jsonl and scale.md
 python scripts/metro.py report results/metro.jsonl --output results/metro.md
-python scripts/query_order.py                 # request-order diagnostic, local
-python scripts/traffic.py fetch sejong        # nine travel-time sets for one region
-cargo build --release --bin traffic
-python scripts/traffic.py run sejong results/traffic/sejong.jsonl --queries 1000 --repeats 3
-python scripts/traffic.py report results/traffic  # results/traffic.jsonl and traffic.md
+python scripts/traffic.py report results/traffic
 python scripts/page.py                        # site/data.js from results/
-python scripts/figure.py                      # site/sejong-query.png, needs data/roads/sejong.bin
 ```
 
-The eleven-city study runs in `.github/workflows/metros.yml` from benchmark code
-[`cee8c6b`](https://github.com/symonyeal/Exact-Routing/tree/cee8c6b56118351c690f68645f0da89717663d5d):
-ten cities in [run 45282401948](https://github.com/symonyeal/Exact-Routing/actions/runs/45282401948),
-Seoul and the full reconciliation in
-[run 45417405041](https://github.com/symonyeal/Exact-Routing/actions/runs/45417405041), same code and
-workload. Later commits did not rerun the city timings. Two-worker throughput is a median 1.97× the
-one-worker figure over 187 city, metric and engine configurations (1.38–2.45×); parallel cell
-customization gives small build gains and partitioning stays serial. CI checks formatting, lints, all
-tests, the Maze-Hard scores against `results/eval.jsonl`, the city report and the page data against
-rebuilds, SALSA-CLRS and Sejong. Protocol: [`docs/sparse.md`](docs/sparse.md).
+Heavy runs are GitHub Actions only (`.github/workflows/scale.yml`). The eleven-city, request-order
+and traffic results are retained in `results/` with the commits that produced them: city timings from
+[`cee8c6b`](https://github.com/symonyeal/Exact-Routing/tree/cee8c6b56118351c690f68645f0da89717663d5d)
+(runs [45282401948](https://github.com/symonyeal/Exact-Routing/actions/runs/45282401948) and
+[45417405041](https://github.com/symonyeal/Exact-Routing/actions/runs/45417405041)), traffic timings
+from `815df09` (run 45659518061). Their runners were archived after commit 645688d. CI checks
+formatting, lints, all tests, the Maze-Hard scores against `results/eval.jsonl`, the city report and
+the page data against rebuilds, and SALSA-CLRS. Protocol: [`docs/sparse.md`](docs/sparse.md).
 
 ## Limits
 
@@ -379,12 +371,13 @@ rebuilds, SALSA-CLRS and Sejong. Protocol: [`docs/sparse.md`](docs/sparse.md).
 | Path | Contents |
 | --- | --- |
 | `src/` | engines and certificate checks (see How it works) |
-| `src/bin/` | `maze`, `salsa`, `roads`, `metro` scorers; `partition_view` and `query_order` diagnostics |
+| `src/bin/` | `maze` and `salsa` scorers; `scale` harness |
 | `tests/` | grids against exhaustive path enumeration and queue search; graph searches against Bellman–Ford; overlays against Dijkstra; certificate mutations |
 | `benches/grid.rs` | maze timing, peak heap and generated-grid scaling against the rivals |
-| `scripts/` | dataset converters, metro runner and report, tie-rule search, page data and figure |
+| `scripts/` | dataset converters, the size study, reports of the retained studies, page data |
 | `results/` | retained measurements: `eval.jsonl`, `bench.md`, `ties.txt`, `salsa.jsonl`, `roads.jsonl`, `metro.jsonl`, `metro.md`, `query-order.json`, `insights.md`, `traffic.jsonl`, `traffic.md` |
+| `external/routingkit/` | RoutingKit CCH driver, the external reference built in CI |
 | `docs/` | `grid.md` (maze proofs and costs), `sparse.md` (SALSA-CLRS, overlays, cut models, city protocol) |
-| `site/` | the results page; `data.js` and `sejong-query.png` are generated |
+| `site/` | the results page; `data.js` is generated |
 
 MIT licence.

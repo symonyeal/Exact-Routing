@@ -1,14 +1,11 @@
-"""Run and summarize the exact metro routing benchmark."""
+"""Validate and summarize the retained metro routing results (producer commit cee8c6b)."""
 
 import argparse
 import hashlib
 import json
 import math
 import os
-import platform
 import re
-import subprocess
-import sys
 from pathlib import Path
 
 CITIES = {
@@ -237,75 +234,6 @@ def _validate_method_workers(scale, method, expected_builds, builds, latencies, 
         raise ValueError("missing or extra throughput thread counts")
 
 
-def machine(repo):
-    """CPU, OS, compiler, Git state and build flags of this run."""
-    cpu = platform.processor() or platform.machine() or "unknown"
-    if sys.platform.startswith("linux"):
-        try:
-            for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
-                if line.lower().startswith("model name"):
-                    cpu = line.split(":", 1)[1].strip()
-                    break
-        except OSError:
-            pass
-    try:
-        memory = next(int(line.split()[1]) * 1024 for line in Path("/proc/meminfo").read_text().splitlines()
-                      if line.startswith("MemTotal:"))
-    except (OSError, StopIteration, ValueError):
-        memory = None
-    return {
-        "cpu": cpu,
-        "os": platform.platform(aliased=True, terse=True),
-        "compiler": subprocess.check_output(["rustc", "-Vv"], cwd=repo, text=True).strip(),
-        "git_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip(),
-        "git_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=repo, text=True).strip()),
-        "rustflags": os.environ.get("RUSTFLAGS") or "default",
-        "os_cpu_count": os.cpu_count(),
-        "ram_bytes": memory,
-    }
-
-
-def command_run(args):
-    for value, label in ((args.queries, "queries"), (args.threads, "threads"), (args.repeats, "repeats")):
-        positive(value, label)
-    if args.threads > args.queries:
-        raise ValueError("threads must not exceed queries")
-    source_path = args.file
-    sidecar = source_path.with_suffix(".meta.json")
-    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
-    binary = source_path.read_bytes()
-    digest = hashlib.sha256(binary).hexdigest()
-    if digest != metadata.get("output_sha256"):
-        raise ValueError("input binary does not match source metadata")
-    repo = Path(__file__).resolve().parents[1]
-    executable = repo / "target" / "release" / ("metro.exe" if os.name == "nt" else "metro")
-    provenance = machine(repo)
-    records = []
-    for scale in (0, 1000):
-        print(f"{source_path.stem}: {args.queries} queries, scale {scale}", flush=True)
-        try:
-            output = subprocess.run(
-                [str(executable), str(source_path), str(args.queries), str(args.threads), str(scale), str(args.repeats)],
-                cwd=repo, check=True, capture_output=True, text=True,
-            ).stdout
-        except subprocess.CalledProcessError as exc:
-            print(exc.stderr, file=sys.stderr)
-            raise
-        for line in output.splitlines():
-            row = json.loads(line)
-            row.update(city=source_path.stem, scale=scale)
-            row["file"] = source_path.name
-            row["binary_sha256"] = digest
-            if row["kind"] == "graph":
-                row["machine"] = provenance
-            records.append(row)
-    validate(records, source_path.stem, args.queries, args.repeats, args.threads)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    partial = args.output.with_suffix(".partial")
-    partial.write_text("".join(json.dumps(r, sort_keys=True, allow_nan=False) + "\n" for r in records), encoding="utf-8")
-    partial.replace(args.output)
-
-
 def load_cities(source):
     results = {}
     if source.is_file():
@@ -450,21 +378,14 @@ def command_report(args):
         print(text)
 
 
-def parser():
+def main():
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="action", required=True)
-    run = sub.add_parser("run")
-    run.add_argument("file", type=Path)
-    run.add_argument("output", type=Path)
-    run.add_argument("--queries", type=int, default=1000)
-    run.add_argument("--threads", type=int, default=2)
-    run.add_argument("--repeats", type=int, default=3)
     report = sub.add_parser("report")
     report.add_argument("source", type=Path, help="city JSONL directory or one consolidated JSONL file")
     report.add_argument("--output", type=Path)
-    return p
+    command_report(p.parse_args())
 
 
 if __name__ == "__main__":
-    args = parser().parse_args()
-    command_run(args) if args.action == "run" else command_report(args)
+    main()

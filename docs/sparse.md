@@ -106,7 +106,7 @@ times as long, because the node-split flow network has twice the nodes.
 
 ## Reproducible metropolitan study
 
-`.github/workflows/metros.yml` covers eight Korean city regions and three international snapshots:
+The workflow `metros.yml` (archived; see the commits cited in the README) covered eight Korean city regions and three international snapshots:
 
 | Source | Graphs | Pinned revision | Native arc cost |
 | --- | --- | --- | --- |
@@ -185,11 +185,9 @@ external speed record.
 CI fails when the committed file differs from a rebuild. `site/app.js` formats these values and takes
 medians and ratios of them; headline figures in the page text are filled from the same data.
 
-`python scripts/figure.py` draws `site/sejong-query.png`, one Sejong query on both overlays at
-U = 256. It runs `partition_view`, which checks cell, boundary, overlay-arc and array-byte counts
-against the frozen build rows and certifies the query against a full Dijkstra tree before it exports
-the cell assignments, boundary nodes and settled-node masks. Needs the converted Sejong graph,
-numpy and matplotlib.
+`site/sejong-query.png` shows one Sejong query on both overlays at U = 256. It was drawn by the
+archived `figure.py` and `partition_view`, which certified the query against a full Dijkstra tree
+before exporting the cell assignments, boundary nodes and settled-node masks.
 
 ## Limits
 

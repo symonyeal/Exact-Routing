@@ -164,7 +164,7 @@ fn update(
     match e {
         0 | 1 => (Index::Plain, None, json!({})),
         2 | 3 => {
-            let o = customize(g, p.parts[e - 2].as_ref().unwrap(), 1);
+            let o = customize(g, p.parts[e - 2].as_ref().unwrap());
             (Index::Overlay(o), None, json!({}))
         }
         4 | 5 => {

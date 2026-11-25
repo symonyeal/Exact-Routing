@@ -27,6 +27,8 @@ Legend (q, u, C, K as traffic.py)
 import argparse
 import hashlib
 import json
+import os
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -36,7 +38,6 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import roads  # noqa: E402
 import traffic  # noqa: E402
-from metro import machine  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
 DATA = REPO / "data" / "scale"
@@ -107,6 +108,34 @@ def induce(nodes, edges, keys):
     keep = (u >= 0) & (v >= 0)
     edges = edges[keep].assign(source=u[keep], target=v[keep]).reset_index(drop=True)
     return chosen.assign(node_id=np.arange(len(chosen)))[["node_id", "lat", "lon"]].reset_index(drop=True), edges
+
+
+def machine(repo):
+    """CPU, OS, compiler, Git state and build flags of this run."""
+    cpu = platform.processor() or platform.machine() or "unknown"
+    if sys.platform.startswith("linux"):
+        try:
+            for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
+                if line.lower().startswith("model name"):
+                    cpu = line.split(":", 1)[1].strip()
+                    break
+        except OSError:
+            pass
+    try:
+        memory = next(int(line.split()[1]) * 1024 for line in Path("/proc/meminfo").read_text().splitlines()
+                      if line.startswith("MemTotal:"))
+    except (OSError, StopIteration, ValueError):
+        memory = None
+    return {
+        "cpu": cpu,
+        "os": platform.platform(aliased=True, terse=True),
+        "compiler": subprocess.check_output(["rustc", "-Vv"], cwd=repo, text=True).strip(),
+        "git_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip(),
+        "git_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=repo, text=True).strip()),
+        "rustflags": os.environ.get("RUSTFLAGS") or "default",
+        "os_cpu_count": os.cpu_count(),
+        "ram_bytes": memory,
+    }
 
 
 def run(size, mode, output, args):

@@ -37,7 +37,7 @@ jobs:
           diff eval.jsonl results/eval.jsonl
 
   sparse:
-    name: SALSA-CLRS and Korea roads (Linux)
+    name: SALSA-CLRS and retained reports (Linux)
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -64,10 +64,6 @@ jobs:
             python3 scripts/salsa.py "$algo"
             target/release/salsa "$algo" data/salsa/"$algo"/*.txt | tee -a "$GITHUB_STEP_SUMMARY"
           done
-      - name: Sejong roads, overlay distances equal Dijkstra
-        run: |
-          python3 scripts/roads.py sejong
-          target/release/roads data/roads/sejong.bin 1000 | tee -a "$GITHUB_STEP_SUMMARY"
 
   bench:
     name: Benchmark (Linux)

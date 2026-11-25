@@ -1,8 +1,8 @@
-"""Time-of-day traffic study: fetch slot metrics, run the `traffic` harness, summarize.
+"""Time-of-day traffic study (Phase T): summarize raw region files, and the shared encoder.
 
-  python scripts/traffic.py fetch REGION             data/traffic/REGION.{bin,metrics.bin,meta.json}
-  python scripts/traffic.py run REGION OUT.jsonl     certified costs and timings for one region
   python scripts/traffic.py report DIR               results/traffic.jsonl and results/traffic.md
+
+The raw files came from the `traffic` harness, archived after commit 645688d.
 
 Source: CAMUS-LAB/data-road_network_eta at the revision pinned in roads.py (CC BY-NC 4.0, so the
 results are non-commercial; topology OpenStreetMap, ODbL; speeds KTDB 2024). Metric 0 is free flow,
@@ -31,10 +31,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import roads  # noqa: E402
-from metro import machine  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
-DATA = REPO / "data" / "traffic"
 SLOTS = ("am_peak", "am_shoulder", "midday", "afternoon", "pm_peak", "pm_shoulder", "offpeak", "night")
 OBSERVED = {"am_peak", "midday", "pm_peak", "offpeak"}
 COLUMNS = ("default_speed_kmh",) + tuple(f"weekday_{s}_p50" for s in SLOTS)
@@ -44,26 +42,6 @@ ENGINES = ("dijkstra", "bidirectional", "overlay-1024", "overlay-4096", "fast_pa
            "fast_paths-CH-fixed-order", "CCH")
 REQUESTS = (10**6, 10**7, 10**8)
 LICENCE = "CC BY-NC 4.0"
-
-
-def fetch(region):
-    stem = "nationwide/korea" if region == "korea" else f"regions/{region}"
-    nodes, nodes_hash = roads.read_table(f"{stem}_road_graph_nodes.parquet", ["node_id", "lat", "lon"])
-    edges, edges_hash = roads.read_table(
-        f"{stem}_road_graph_edges.parquet",
-        ["source", "target", "length_m", "oneway", "default_speed_kmh", *COLUMNS[1:]],
-    )
-    source = {
-        "dataset": "CAMUS-LAB/data-road_network_eta",
-        "url": roads.URL.format(f"{stem}_road_graph_edges.parquet"),
-        "revision": roads.REVISION,
-        "licence": LICENCE,
-        "region": region,
-        "edge_rows": len(edges),
-        "nodes_sha256": nodes_hash,
-        "edges_sha256": edges_hash,
-    }
-    store(DATA, region, nodes, edges, COLUMNS, METRICS, source)
 
 
 def store(directory, name, nodes, edges, columns, metrics, source):
@@ -101,42 +79,6 @@ def store(directory, name, nodes, edges, columns, metrics, source):
     }
     (directory / f"{name}.meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8", newline="\n")
     print(f"{name}: {n} nodes, {m} arcs, {len(columns)} metrics")
-
-
-def run(region, output, queries, repeats, threads):
-    import subprocess
-
-    meta = json.loads((DATA / f"{region}.meta.json").read_text(encoding="utf-8"))
-    road, cols = DATA / f"{region}.bin", DATA / f"{region}.metrics.bin"
-    for path, key in ((road, "output_sha256"), (cols, "metrics_sha256")):
-        if hashlib.sha256(path.read_bytes()).hexdigest() != meta[key]:
-            raise ValueError(f"{path.name} does not match its metadata")
-    exe = REPO / "target" / "release" / ("traffic.exe" if sys.platform == "win32" else "traffic")
-    # Rows are copied to OUTPUT.partial as they arrive, so a run cut off by a time limit keeps them.
-    output.parent.mkdir(parents=True, exist_ok=True)
-    partial = output.with_name(output.name + ".partial")
-    lines = []
-    with subprocess.Popen([str(exe), str(road), str(cols), str(queries), str(repeats), str(threads)],
-                          cwd=REPO, stdout=subprocess.PIPE, text=True) as proc, \
-            partial.open("w", encoding="utf-8", newline="\n") as f:
-        for line in proc.stdout:
-            lines.append(line)
-            f.write(line)
-            f.flush()
-    if proc.returncode:
-        raise subprocess.CalledProcessError(proc.returncode, proc.args)
-    rows = [json.loads(line) for line in lines]
-    try:
-        import resource  # POSIX only; ru_maxrss is in KiB on Linux
-        peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024
-    except ImportError:
-        peak = None
-    rows[0].update(region=region, source=meta, machine=machine(REPO), peak_rss_bytes=peak)
-    for row in rows:
-        row["region"] = region
-    validate(rows)
-    output.write_text("".join(json.dumps(r, sort_keys=True, allow_nan=False) + "\n" for r in rows),
-                      encoding="utf-8", newline="\n")
 
 
 def validate(rows):
@@ -333,24 +275,11 @@ def markdown(rows):
 def main():
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="command", required=True)
-    f = sub.add_parser("fetch")
-    f.add_argument("region", choices=REGIONS)
-    r = sub.add_parser("run")
-    r.add_argument("region", choices=REGIONS)
-    r.add_argument("output", type=Path)
-    r.add_argument("--queries", type=int, default=1000)
-    r.add_argument("--repeats", type=int, default=3)
-    r.add_argument("--threads", type=int, default=2)
     s = sub.add_parser("report")
     s.add_argument("directory", type=Path)
     s.add_argument("--results", type=Path, default=REPO / "results")
     a = p.parse_args()
-    if a.command == "fetch":
-        fetch(a.region)
-    elif a.command == "run":
-        run(a.region, a.output, a.queries, a.repeats, a.threads)
-    else:
-        report(a.directory, a.results)
+    report(a.directory, a.results)
 
 
 if __name__ == "__main__":

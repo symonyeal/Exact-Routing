@@ -16,10 +16,6 @@ pub struct BiSearch {
     tr: Vec<u32>,
     hf: BinaryHeap<Reverse<(Key, u32)>>,
     hr: BinaryHeap<Reverse<(Key, u32)>>,
-    /// Nodes settled by both directions in the most recent query.
-    pub settled: usize,
-    /// Arcs examined in both directions in the most recent query.
-    pub scanned: usize,
 }
 
 impl BiSearch {
@@ -32,8 +28,6 @@ impl BiSearch {
             tr: Vec::new(),
             hf: BinaryHeap::new(),
             hr: BinaryHeap::new(),
-            settled: 0,
-            scanned: 0,
         }
     }
 
@@ -50,7 +44,6 @@ impl BiSearch {
         self.tr.clear();
         self.hf.clear();
         self.hr.clear();
-        (self.settled, self.scanned) = (0, 0);
         if s == t {
             return 0.0;
         }
@@ -79,13 +72,11 @@ impl BiSearch {
             };
             let Reverse((Key(dx), x)) = heap.pop().unwrap();
             let x = x as usize;
-            self.settled += 1;
             if other[x].is_finite() {
                 best = best.min(dx + other[x]);
             }
             let start = graph.off[x];
             let end = graph.off[x + 1];
-            self.scanned += end - start;
             for a in start..end {
                 let y = graph.head[a] as usize;
                 let dy = dx + graph.w[a];

@@ -54,7 +54,7 @@ fn fixed_preparation_answers_every_metric_exactly() {
     let order = Ch::new(&gs[0]).order();
     let (mut search, mut ws, mut path) = (Search::new(n), cch.workspace(), Vec::new());
     for g in &gs {
-        let o = customize(g, &p, 2);
+        let o = customize(g, &p);
         let m = cch.customize(g, 1).0;
         let (full, fixed) = (Ch::new(g), Ch::with_order(g, &order));
         let (mut c1, mut c2) = (full.calculator(), fixed.calculator());

@@ -43,110 +43,44 @@ pub struct Overlay {
     off: Vec<usize>,
     head: Vec<u32>,
     w: Vec<f64>,
-    pub cells: usize,
-    pub boundary: usize,
 }
 
 impl Overlay {
-    /// Overlay arcs stored.
-    pub fn arcs(&self) -> usize {
-        self.head.len()
-    }
-
-    /// Bytes in the stored array elements, excluding Vec headers, spare capacity and query state.
-    pub fn bytes(&self) -> usize {
-        4 * (self.cell.len() + self.home.len() + self.head.len())
-            + size_of::<usize>() * self.off.len()
-            + 8 * self.w.len()
-    }
-
     /// Cell IDs for base arcs in graph CSR order; `None` marks a cut arc.
     pub fn arc_cells(&self) -> impl Iterator<Item = Option<u32>> + '_ {
         self.cell.iter().map(|&c| (c != NONE).then_some(c))
-    }
-
-    /// The cell containing an interior node, or `None` for a boundary or isolated node.
-    pub fn interior_cell(&self, v: usize) -> Option<u32> {
-        self.home.get(v).copied().filter(|&c| c < NONE - 1)
-    }
-
-    /// Whether `v` is a boundary node.
-    pub fn is_boundary(&self, v: usize) -> bool {
-        self.home.get(v) == Some(&NONE)
-    }
-
-    /// Boundary node IDs in ascending order.
-    pub fn boundary_nodes(&self) -> impl Iterator<Item = usize> + '_ {
-        self.home
-            .iter()
-            .enumerate()
-            .filter_map(|(v, &c)| (c == NONE).then_some(v))
     }
 }
 
 /// Partition the edges of g into cells of at most `u` nodes and build the overlay. `xy` are planar
 /// node coordinates for the inertial-flow projections.
 pub fn build(g: &Graph, xy: &[(f64, f64)], u: usize, model: Model) -> Overlay {
-    build_parallel(g, xy, u, model, 1)
+    customize(g, &partition(g, xy, u, model))
 }
 
-/// Build the same overlay with at most `threads` independent customization workers. The partition
-/// is deterministic and serial; each worker owns its search workspace and a disjoint set of cells.
-pub fn build_parallel(
-    g: &Graph,
-    xy: &[(f64, f64)],
-    u: usize,
-    model: Model,
-    threads: usize,
-) -> Overlay {
-    customize(g, &partition(g, xy, u, model), threads)
-}
-
-/// Compute the in-cell boundary distances of a fixed partition under the weights of `g`, with at
-/// most `threads` workers. `p` depends only on the topology and coordinates, so one partition serves
-/// every graph with the same arcs in the same CSR order; only `g.w` is read for the distances.
-pub fn customize(g: &Graph, p: &Partition, threads: usize) -> Overlay {
+/// Compute the in-cell boundary distances of a fixed partition under the weights of `g`. `p`
+/// depends only on the topology and coordinates, so one partition serves every graph with the same
+/// arcs in the same CSR order; only `g.w` is read for the distances.
+pub fn customize(g: &Graph, p: &Partition) -> Overlay {
     let n = g.n;
-    assert!(threads > 0 && p.cell.len() == g.head.len() && p.home.len() == n);
+    assert!(p.cell.len() == g.head.len() && p.home.len() == n);
     let Partition {
         cell,
         home,
         members,
     } = p;
-    let cells = members.len();
-    let work = |lo: usize, cells: &[Vec<u32>]| {
-        let mut over = Vec::new();
-        let mut search = Search::new(n);
-        for (i, b) in cells.iter().enumerate() {
-            for &x in b {
-                search.run(g, x as usize, None, |a| cell[a] == (lo + i) as u32, None);
-                over.extend(
-                    b.iter()
-                        .filter(|&&y| y != x && search.d[y as usize] < f64::INFINITY)
-                        .map(|&y| (x, y, search.d[y as usize])),
-                );
-            }
+    let mut over = Vec::new();
+    let mut search = Search::new(n);
+    for (c, b) in members.iter().enumerate() {
+        for &x in b {
+            search.run(g, x as usize, None, |a| cell[a] == c as u32, None);
+            over.extend(
+                b.iter()
+                    .filter(|&&y| y != x && search.d[y as usize] < f64::INFINITY)
+                    .map(|&y| (x, y, search.d[y as usize])),
+            );
         }
-        over
-    };
-    let mut over = if threads == 1 || members.is_empty() {
-        work(0, members)
-    } else {
-        let chunk = members.len().div_ceil(threads).max(1);
-        std::thread::scope(|scope| {
-            let jobs: Vec<_> = members
-                .chunks(chunk)
-                .enumerate()
-                .map(|(i, b)| {
-                    let work = &work;
-                    scope.spawn(move || work(i * chunk, b))
-                })
-                .collect();
-            jobs.into_iter()
-                .flat_map(|job| job.join().unwrap())
-                .collect()
-        })
-    };
+    }
     for x in 0..n {
         let r = g.off[x]..g.off[x + 1];
         let arcs = cell[r.clone()].iter().zip(&g.head[r.clone()]).zip(&g.w[r]);
@@ -155,7 +89,6 @@ pub fn customize(g: &Graph, p: &Partition, threads: usize) -> Overlay {
                 .map(|((_, &y), &w)| (x as u32, y, w)),
         );
     }
-    let boundary = home.iter().filter(|&&c| c == NONE).count();
     let o = Graph::new(n, over);
     Overlay {
         cell: cell.clone(),
@@ -163,8 +96,6 @@ pub fn customize(g: &Graph, p: &Partition, threads: usize) -> Overlay {
         off: o.off,
         head: o.head,
         w: o.w,
-        cells,
-        boundary,
     }
 }
 
@@ -457,15 +388,12 @@ fn flow_path(
 }
 
 /// Dijkstra with reusable buffers, restricted to the arcs `allowed` admits plus optional overlay
-/// arcs at boundary nodes, stopping when t is settled. Only touched entries are reset. `settled`
-/// and `scanned` count the nodes settled and arcs examined by the last search.
+/// arcs at boundary nodes, stopping when t is settled. Only touched entries are reset.
 pub struct Search {
     pub d: Vec<f64>,
     done: Vec<bool>,
     touched: Vec<u32>,
     heap: BinaryHeap<Reverse<(Key, u32)>>,
-    pub settled: usize,
-    pub scanned: usize,
 }
 
 impl Search {
@@ -475,8 +403,6 @@ impl Search {
             done: vec![false; n],
             touched: Vec::new(),
             heap: BinaryHeap::new(),
-            settled: 0,
-            scanned: 0,
         }
     }
 
@@ -494,7 +420,6 @@ impl Search {
             (self.d[v as usize], self.done[v as usize]) = (f64::INFINITY, false);
         }
         self.touched.clear();
-        (self.settled, self.scanned) = (0, 0);
         self.heap.clear();
         self.heap.push(Reverse((Key(0.0), s as u32)));
         self.d[s] = 0.0;
@@ -504,13 +429,11 @@ impl Search {
             if std::mem::replace(&mut self.done[x], true) {
                 continue;
             }
-            self.settled += 1;
             if Some(x) == t {
                 return dx;
             }
             let over = o.filter(|o| o.home[x] == NONE);
             let ext = over.map_or(0..0, |o| o.off[x]..o.off[x + 1]);
-            self.scanned += g.off[x + 1] - g.off[x] + ext.len();
             let base = (g.off[x]..g.off[x + 1])
                 .filter(|&a| allowed(a))
                 .map(|a| (g.head[a], g.w[a]));
@@ -542,68 +465,11 @@ impl Search {
             Some(o),
         )
     }
-
-    /// Nodes settled by the most recent run, in ascending ID order.
-    pub fn settled_nodes(&self) -> impl Iterator<Item = usize> + '_ {
-        self.done
-            .iter()
-            .enumerate()
-            .filter_map(|(v, &done)| done.then_some(v))
-    }
-
-    /// Number of nodes whose distance state will be reset before the next run.
-    pub fn touched_count(&self) -> usize {
-        self.touched.len()
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Model, Search, build, cut};
-    use crate::graph::Graph;
-
-    #[test]
-    fn diagnostic_getters_match_search_state_and_overlay_partition() {
-        let g = Graph::new(
-            6,
-            [
-                (0, 1, 0.0),
-                (1, 2, 2.0),
-                (2, 0, 1.0),
-                (2, 3, 1.0),
-                (3, 4, 1.0),
-            ],
-        );
-        let xy = vec![(0.0, 0.0); g.n];
-        for model in [Model::Graph, Model::Hypergraph] {
-            let o = build(&g, &xy, 2, model);
-            let boundaries: Vec<_> = o.boundary_nodes().collect();
-            assert_eq!(boundaries.len(), o.boundary);
-            assert!(boundaries.windows(2).all(|w| w[0] < w[1]));
-            assert!(
-                boundaries
-                    .iter()
-                    .all(|&v| o.is_boundary(v) && o.interior_cell(v).is_none())
-            );
-            assert!((0..g.n).all(|v| !o.is_boundary(v) || o.interior_cell(v).is_none()));
-            assert_eq!(o.arc_cells().count(), g.head.len());
-            assert!(o.arc_cells().flatten().all(|c| (c as usize) < o.cells));
-            assert!((0..g.n).any(|v| o.interior_cell(v).is_some()));
-            assert!(o.interior_cell(5).is_none());
-
-            let mut q = Search::new(g.n);
-            assert_eq!(q.query(&g, &o, 0, 3), 3.0);
-            let settled: Vec<_> = q.settled_nodes().collect();
-            assert_eq!(settled.len(), q.settled);
-            assert!(q.touched_count() >= q.settled);
-            assert!(settled.contains(&3));
-            assert_eq!(q.query(&g, &o, 5, 5), 0.0);
-            assert_eq!(q.settled_nodes().collect::<Vec<_>>(), vec![5]);
-            assert_eq!(q.touched_count(), 1);
-            assert!(q.query(&g, &o, 5, 0).is_infinite());
-            assert_eq!(q.settled_nodes().count(), q.settled);
-        }
-    }
+    use super::{Model, cut};
 
     #[test]
     fn blocking_flow_cuts_match_exhaustive_separators() {

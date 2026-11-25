@@ -1,21 +1,17 @@
-"""Convert one Korea Road Network ETA region to the `roads` binary format.
+"""Read Korea Road Network ETA tables and encode them in the `roads` binary format.
 
 Source: https://huggingface.co/datasets/CAMUS-LAB/data-road_network_eta at
 revision b111710756ee5727a0fbe3f6203c0cc2f93de2be (CC BY-NC 4.0; topology
 from OpenStreetMap, ODbL; observed speeds from KTDB 2024).
 
-Usage: python scripts/roads.py REGION [SLOT]. The default slot is
-weekday_am_peak_p50. Binary output stores node and arc counts as little-endian
-u64, coordinates as f64, endpoints as u32, and travel times as f64 seconds.
+The binary stores node and arc counts as little-endian u64, coordinates as f64, endpoints as u32, and travel times as f64 seconds.
 Each two-way segment becomes two arcs. Missing slot speeds use the default
 speed, then speeds are clipped below at 5 km/h as specified by the dataset.
 """
 
 import hashlib
 import io
-import json
 import ssl
-import sys
 import urllib.request
 from pathlib import Path
 
@@ -24,7 +20,6 @@ import pyarrow.parquet as pq
 
 REVISION = "b111710756ee5727a0fbe3f6203c0cc2f93de2be"
 URL = f"https://huggingface.co/datasets/CAMUS-LAB/data-road_network_eta/resolve/{REVISION}/{{}}"
-DATA = Path(__file__).resolve().parent.parent / "data" / "roads"
 
 ctx = ssl.create_default_context()
 # Some proxies re-sign with chains lacking a Subject Key Identifier; chain and hostname checks remain.
@@ -98,36 +93,3 @@ def read_table(name, columns):
     with urllib.request.urlopen(URL.format(name), timeout=600, context=ctx) as response:
         raw = response.read()
     return pq.read_table(io.BytesIO(raw), columns=columns).to_pandas(), hashlib.sha256(raw).hexdigest()
-
-
-def main():
-    region = sys.argv[1]
-    slot = sys.argv[2] if len(sys.argv) > 2 else "weekday_am_peak_p50"
-    stem = "nationwide/korea" if region == "korea" else f"regions/{region}"
-    nodes, nodes_hash = read_table(f"{stem}_road_graph_nodes.parquet", ["node_id", "lat", "lon"])
-    edges, edges_hash = read_table(
-        f"{stem}_road_graph_edges.parquet",
-        ["source", "target", "length_m", "oneway", "default_speed_kmh", slot],
-    )
-    binary, n, m = encode(nodes, edges, slot)
-    DATA.mkdir(parents=True, exist_ok=True)
-    output = DATA / f"{region}.bin"
-    output.write_bytes(binary)
-    metadata = {
-        "dataset": "CAMUS-LAB/data-road_network_eta",
-        "revision": REVISION,
-        "region": region,
-        "slot": slot,
-        "weight_units": "seconds",
-        "nodes_sha256": nodes_hash,
-        "edges_sha256": edges_hash,
-        "output_sha256": hashlib.sha256(binary).hexdigest(),
-        "node_count": n,
-        "arc_count": m,
-    }
-    output.with_suffix(".meta.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-    print(f"{region}: {n} nodes, {m} arcs")
-
-
-if __name__ == "__main__":
-    main()
