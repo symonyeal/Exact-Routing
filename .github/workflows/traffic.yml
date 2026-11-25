@@ -83,6 +83,7 @@ jobs:
       - name: Fetch the pinned region with all slot speeds
         run: python scripts/traffic.py fetch "$REGION"
       - name: Certified costs on nine metrics, update and query timing
+        timeout-minutes: 330
         env:
           QUERIES: ${{ matrix.region == 'korea' && inputs.korea_queries || inputs.queries }}
           REPEATS: ${{ inputs.repeats }}
@@ -92,6 +93,14 @@ jobs:
           name: traffic-${{ matrix.region }}
           path: results/traffic/${{ matrix.region }}.jsonl
           if-no-files-found: error
+          retention-days: 30
+      - name: Keep the rows of an unfinished run
+        if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: partial-${{ matrix.region }}
+          path: results/traffic/${{ matrix.region }}.jsonl.partial
+          if-no-files-found: ignore
           retention-days: 30
 
   report:

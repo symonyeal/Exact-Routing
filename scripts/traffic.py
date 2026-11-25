@@ -102,9 +102,20 @@ def run(region, output, queries, repeats, threads):
         if hashlib.sha256(path.read_bytes()).hexdigest() != meta[key]:
             raise ValueError(f"{path.name} does not match its metadata")
     exe = REPO / "target" / "release" / ("traffic.exe" if sys.platform == "win32" else "traffic")
-    out = subprocess.run([str(exe), str(road), str(cols), str(queries), str(repeats), str(threads)],
-                         cwd=REPO, check=True, stdout=subprocess.PIPE, text=True).stdout
-    rows = [json.loads(line) for line in out.splitlines()]
+    # Rows are copied to OUTPUT.partial as they arrive, so a run cut off by a time limit keeps them.
+    output.parent.mkdir(parents=True, exist_ok=True)
+    partial = output.with_name(output.name + ".partial")
+    lines = []
+    with subprocess.Popen([str(exe), str(road), str(cols), str(queries), str(repeats), str(threads)],
+                          cwd=REPO, stdout=subprocess.PIPE, text=True) as proc, \
+            partial.open("w", encoding="utf-8", newline="\n") as f:
+        for line in proc.stdout:
+            lines.append(line)
+            f.write(line)
+            f.flush()
+    if proc.returncode:
+        raise subprocess.CalledProcessError(proc.returncode, proc.args)
+    rows = [json.loads(line) for line in lines]
     try:
         import resource  # POSIX only; ru_maxrss is in KiB on Linux
         peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024
@@ -114,7 +125,6 @@ def run(region, output, queries, repeats, threads):
     for row in rows:
         row["region"] = region
     validate(rows)
-    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("".join(json.dumps(r, sort_keys=True, allow_nan=False) + "\n" for r in rows),
                       encoding="utf-8", newline="\n")
 
