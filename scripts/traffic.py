@@ -190,24 +190,35 @@ def envelope(lines):
         out.append(nxt)
 
 
-def breakeven(eng, requests):
-    """Cheapest engine at K = 0 and its switch points, for R requests per day."""
-    lines = {e: (requests * v["q"] / 1e9, v["u"] / 3600) for e, v in eng.items()}
+def breakeven(eng, requests, p=None):
+    """Cheapest engine at K = 0 and its switch points, for R requests per day; from pass p's q and u
+    when given, else from the means over passes."""
+    pick = (lambda v: (v["q"], v["u"])) if p is None else (lambda v: (v["q_pass"][p], v["u_pass"][p]))
+    lines = {e: (requests * pick(v)[0] / 1e9, pick(v)[1] / 3600) for e, v in eng.items()}
     first = min(lines, key=lambda x: (lines[x][0], lines[x][1]))
     return first, envelope(lines)
 
 
+def overlaps(a, b):
+    """Whether two engines' per-pass ranges of a measure overlap: not distinguishable."""
+    return min(a) <= max(b) and min(b) <= max(a)
+
+
 def regret(rows):
-    """Regret and ETA error for free -> each slot and each slot -> the next, over reachable pairs with
-    distinct endpoints; `group` all or uniform (the uniform-pair half of the workload)."""
+    """Regret and ETA error over reachable pairs with distinct endpoints. `series`: free (free flow ->
+    each slot), consecutive (each slot -> the next, night wrapping to am_peak) or observed (each
+    observed slot -> the next observed one, skipping the derived slots); `group` all or uniform (the
+    uniform-pair half of the workload)."""
     g = rows[0]
     k = len(METRICS)
     idx = [i for i, ((s, t), c) in enumerate(zip(g["pairs"], g["costs"])) if c is not None and s != t]
     c = np.array([g["costs"][i] for i in idx], float).reshape(-1, k, k)
     uniform = np.array([i % 4 >= 2 for i in idx])
-    moves = [(0, j) for j in range(1, k)] + [(j, j % (k - 1) + 1) for j in range(1, k)]
+    seen = [METRICS.index(m) for m in METRICS if m in OBSERVED]
+    moves = ([("free", 0, j) for j in range(1, k)] + [("consecutive", j, j % (k - 1) + 1) for j in range(1, k)]
+             + [("observed", a, b) for a, b in zip(seen, seen[1:] + seen[:1])])
     out = []
-    for tau, sigma in moves:
+    for series, tau, sigma in moves:
         for group, keep in (("all", np.ones(len(idx), bool)), ("uniform", uniform)):
             if not keep.any():
                 continue
@@ -216,7 +227,7 @@ def regret(rows):
             r = x[:, tau, sigma] / opt - 1
             eta = x[:, tau, tau] / opt - 1
             out.append({
-                "from": METRICS[tau], "to": METRICS[sigma], "group": group, "pairs": int(keep.sum()),
+                "series": series, "from": METRICS[tau], "to": METRICS[sigma], "group": group, "pairs": int(keep.sum()),
                 "mean": float(r.mean()), "p95": float(np.quantile(r, 0.95, method="inverted_cdf")),
                 "share_ge5": float((r >= 0.05).mean()), "share_changed": float((r > 0).mean()),
                 "eta_mean": float(eta.mean()), "eta_abs_mean": float(np.abs(eta).mean()),
@@ -244,8 +255,15 @@ def summarize(path):
     out += [{"kind": "engine", "region": region, "method": e, **v} for e, v in eng.items()]
     for r in REQUESTS:
         first, switches = breakeven(eng, r)
-        out.append({"kind": "breakeven", "region": region, "requests": r, "cheapest_static": first,
-                    "switches": [{"k": k, "to": e} for k, e in switches]})
+        passes = [breakeven(eng, r, p) for p in range(g["repeats"])]
+        same = all(f == first and [e for _, e in sw] == [e for _, e in switches] for f, sw in passes)
+        out.append({
+            "kind": "breakeven", "region": region, "requests": r, "cheapest_static": first,
+            "static_ties": [e for e in ENGINES if e != first and overlaps(eng[e]["q_pass"], eng[first]["q_pass"])],
+            "passes_agree": same,
+            "switches": [{"k": k, "to": e, "k_pass": [sw[i][0] for _, sw in passes] if same else None}
+                         for i, (k, e) in enumerate(switches)],
+        })
     out += [{"kind": "regret", "region": region, **r} for r in regret(rows)]
     return out
 
@@ -278,13 +296,15 @@ def markdown(rows):
     lines += ["", "## Break-even updates per day", "",
               "| Region | Requests / day | Cheapest without updates | Switches (K per day → engine) |", "| --- | ---: | --- | --- |"]
     for r in (x for x in rows if x["kind"] == "breakeven"):
-        sw = "; ".join(f"{s['k']:.3g} → {s['to']}" for s in r["switches"]) or "none"
-        lines.append(f"| {r['region']} | {r['requests']:,} | {r['cheapest_static']} | {sw} |")
+        sw = "; ".join(f"{s['k']:.3g}" + (f" ({min(s['k_pass']):.3g}–{max(s['k_pass']):.3g})" if s["k_pass"] else "")
+                       + f" → {s['to']}" for s in r["switches"]) or "none"
+        ties = f" (not distinguishable from {', '.join(r['static_ties'])})" if r["static_ties"] else ""
+        lines.append(f"| {r['region']} | {r['requests']:,} | {r['cheapest_static']}{ties} | {sw} |")
     lines += ["", "## Regret of routing on stale times (all reachable pairs)", "",
-              "| Region | From → to | Pairs | Mean | p95 | ≥ 5% | Route changes | ETA error, mean abs |",
-              "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |"]
+              "| Region | Series | From → to | Pairs | Mean | p95 | ≥ 5% | Route changes | ETA error, mean abs |",
+              "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |"]
     for r in (x for x in rows if x["kind"] == "regret" and x["group"] == "all"):
-        lines.append(f"| {r['region']} | {r['from']} → {r['to']} | {r['pairs']} | {100 * r['mean']:.2f}% | "
+        lines.append(f"| {r['region']} | {r['series']} | {r['from']} → {r['to']} | {r['pairs']} | {100 * r['mean']:.2f}% | "
                      f"{100 * r['p95']:.2f}% | {100 * r['share_ge5']:.1f}% | {100 * r['share_changed']:.1f}% | "
                      f"{100 * r['eta_abs_mean']:.1f}% |")
     return "\n".join(lines) + "\n"

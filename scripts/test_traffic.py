@@ -70,6 +70,9 @@ class Regret(unittest.TestCase):
         self.assertAlmostEqual(out["free", "am_peak", "all"]["mean"], 0.05)
         self.assertEqual(out["free", "am_peak", "all"]["share_changed"], 0.5)
         self.assertEqual(out["am_peak", "am_shoulder", "all"]["mean"], 0.0)
+        self.assertEqual([(r["from"], r["to"]) for r in traffic.regret(rows)
+                          if r["series"] == "observed" and r["group"] == "all"],
+                         [("am_peak", "midday"), ("midday", "pm_peak"), ("pm_peak", "offpeak"), ("offpeak", "am_peak")])
 
     def test_validate_rejects_a_stale_path_below_the_optimum(self):
         rows = raw([self.matrix(0.5)], [[0, 1]])

@@ -7,6 +7,8 @@ retained measurements in results/. Normalizations:
     core-hours/1e9  1e9 / (one-worker queries per second) / 3600
     cut ratio       junction-cut value / edge-cut value at the same cell bound, = 1.00
     carryover share (fixed-order median - pre-cleared median) / fixed-order median
+    daily cost      core-hours per day at R requests and K updates: R q / 1e9 + K u / 3600
+    regret          cost on the actual slot of the route chosen on stale times / optimum - 1
 """
 
 import argparse
@@ -17,14 +19,23 @@ import re
 import statistics
 from pathlib import Path
 
+import traffic
 from metro import BOUNDS, CITIES, load_cities, validate_report_set
 
 ROOT = Path(__file__).resolve().parents[1]
 LABELS = {
     "sejong": "Sejong", "seoul": "Seoul", "busan": "Busan", "daegu": "Daegu", "incheon": "Incheon",
     "gwangju": "Gwangju", "daejeon": "Daejeon", "ulsan": "Ulsan", "london-large": "London",
-    "new_york-large": "New York", "tokyo-large": "Tokyo",
+    "new_york-large": "New York", "tokyo-large": "Tokyo", "korea": "South Korea, nationwide",
 }
+TRAFFIC_LABELS = {
+    "dijkstra": "Plain Dijkstra", "bidirectional": "Bidirectional Dijkstra",
+    "overlay-1024": "Overlay, junction cut, 1,024", "overlay-4096": "Overlay, junction cut, 4,096",
+    "fast_paths-CH": "Contraction hierarchy, rebuilt", "fast_paths-CH-fixed-order": "Contraction hierarchy, fixed order",
+    "CCH": "Customizable contraction hierarchy",
+}
+# Updates per day beyond this (once per second) are off the exhibit's scale.
+K_MAX = 86400
 WORLD = {"london-large", "new_york-large", "tokyo-large"}
 ENGINES = (
     ("dijkstra", "Plain Dijkstra"),
@@ -261,8 +272,10 @@ def build_payload(results_dir=ROOT / "results"):
         raise ValueError("salsa.jsonl no longer reports 30 fully certified sets")
     big = [r for r in salsa if r["set"].endswith("_1600")]
 
+    tpath = results_dir / "traffic.jsonl"
     return {
-        "schema": 2,
+        "schema": 3,
+        "traffic": traffic_payload(tpath) if tpath.exists() else None,
         "provenance": {"metro_sha256": sha, "producer_sha": producer, "queries": queries,
                        "repeats": repeats, "threads": threads, "seed": seed},
         "engines": [{"id": k, "label": v} for k, v in ENGINES],
@@ -281,6 +294,46 @@ def build_payload(results_dir=ROOT / "results"):
             "published_1600": SALSA_PUBLISHED,
         },
     }
+
+
+def traffic_payload(path):
+    """Normalized traffic-study evidence: per-region engines, break-even and regret rows."""
+    raw = path.read_bytes()
+    rows = [json.loads(line) for line in raw.decode("utf-8").splitlines() if line]
+    regions = [r for r in traffic.REGIONS if any(x["kind"] == "source" and x["region"] == r for x in rows)]
+    if not regions:
+        raise ValueError("traffic.jsonl has no regions")
+    out = []
+    for region in regions:
+        src = next(r for r in rows if r["kind"] == "source" and r["region"] == region)
+        eng = {r["method"]: r for r in rows if r["kind"] == "engine" and r["region"] == region}
+        if set(eng) != set(traffic.ENGINES):
+            raise ValueError(f"{region}: incomplete engine population")
+        base = eng["dijkstra"]["q"]
+        breakeven = []
+        for b in (r for r in rows if r["kind"] == "breakeven" and r["region"] == region):
+            first, switches = traffic.breakeven(eng, b["requests"])
+            if first != b["cheapest_static"] or [e for _, e in switches] != [x["to"] for x in b["switches"]]:
+                raise ValueError(f"{region}: break-even rows do not recompute")
+            breakeven.append({"requests": b["requests"], "static": first, "ties": b["static_ties"],
+                              "switches": [{"k": x["k"], "to": x["to"], "k_pass": x["k_pass"]}
+                                           for x in b["switches"] if x["k"] <= K_MAX]})
+        regret = [{k: r[k] for k in ("series", "from", "to", "group", "pairs", "mean", "p95", "share_ge5", "share_changed",
+                                     "eta_mean", "eta_abs_mean", "eta_abs_p95")}
+                  for r in rows if r["kind"] == "regret" and r["region"] == region]
+        if any(r["mean"] < 0 for r in regret):
+            raise ValueError(f"{region}: negative regret")
+        out.append({
+            "id": region, "label": LABELS.get(region, region.title()), "nodes": src["nodes"], "arcs": src["arcs"],
+            "queries": src["queries"], "reachable": src["reachable"], "trees": src["certified_trees"],
+            "engines": {e: {"q": v["q"], "q_range": [min(v["q_pass"]), max(v["q_pass"])], "u": v["u"],
+                            "u_range": [min(v["u_pass"]), max(v["u_pass"])], "prepare_s": v["prepare_s"],
+                            "index": 100 * v["q"] / base, "checked": v["checked"]} for e, v in eng.items()},
+            "breakeven": breakeven, "regret": regret,
+        })
+    return {"sha256": hashlib.sha256(raw).hexdigest(), "k_max": K_MAX,
+            "engines": [{"id": e, "label": TRAFFIC_LABELS[e]} for e in traffic.ENGINES],
+            "slots": list(traffic.METRICS), "observed": sorted(traffic.OBSERVED), "regions": out}
 
 
 def javascript(payload):

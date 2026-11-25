@@ -44,17 +44,10 @@ medians (509 ÷ 624 gives 18% for bidirectional search, against a 31% median per
   Dijkstra; the contraction hierarchy 99.6% less.
 - **The contraction hierarchy was cheapest in all eleven cities**, at 13% of the best overlay's compute,
   and a full rebuild took at most 2.9 seconds (Seoul, 328,610 junctions).
-- **Whether overlays win when travel times change is not settled here.** Production engines re-weight
-  overlay cells to take in traffic. OSRM's
-  [traffic notes](https://github.com/Project-OSRM/osrm-backend/wiki/Traffic) (last edited 2022) say MLD
-  "calculates routes more slowly than CH, but traffic imports are significantly faster"; customizable
-  route planning, described by
-  [its authors](https://www.microsoft.com/en-us/research/publication/customizable-route-planning-in-road-networks/)
-  in 2013 as the core of Bing Maps' engine, "can incorporate a new metric in less than a second". This
-  repository times partitioning and re-weighting together, and those full overlay rebuilds were slower
-  than the contraction hierarchy's (9.0 against 0.8 seconds at the median). At these network sizes a
-  contraction rebuild takes seconds; timing overlay re-weighting alone against it is the measurement
-  that would decide the case.
+- **When travel times change, a customizable contraction hierarchy takes over** once updates pass
+  3–79 a day per million daily requests (median city 33); junction-cut overlays with re-weighted
+  cells (U = 1,024 and 4,096, one thread) were never the cheapest engine. See
+  [What traffic costs](#what-traffic-costs-a-routing-service) below.
 - **Bidirectional search without precomputation** saves 31% at the median but cost more than plain
   Dijkstra in two cities: Daegu (index 128, plain Dijkstra = 100) and Incheon (140). They are the two
   cities with the most unreachable pairs (178 and 321 of 1,000); whether that causes it is untested.
@@ -62,6 +55,136 @@ medians (509 ÷ 624 gives 18% for bidirectional search, against a 31% median per
 
 The [results page](https://symonyeal.github.io/Exact-Routing/) shows each city, the cut comparison, one
 search drawn on the Sejong map and the benchmark-order effect below.
+
+## What traffic costs a routing service
+
+**A service that updates travel times more than about 3–79 times a day per million daily requests
+spends the least compute on a customizable contraction hierarchy (CCH); below about 2–8 updates a
+day per million requests a contraction hierarchy (CH) rebuilt per update is cheapest, and between the
+two a CH re-contracted in a fixed node order. Above about 210,000–435,000 updates a day per million
+requests, more than twice a second, a Dijkstra search without an index is cheapest.** Junction-cut
+overlays with a fixed partition (U = 1,024 and 4,096, one thread) re-weighted their cells in 67 ms
+at the median city but were never the cheapest engine at any request or update rate: the CCH was
+cheaper per request and per update in all eight cities. Routing on the dataset's free-flow speeds
+instead of the current slot's made trips 3.6–7.5% slower on average. Routing on the previous slot's
+speeds cost 0.2–0.8% over all consecutive slots, and 0.5–2.0% between the four observed slots.
+
+The study answers: a service handles R requests a day on a network whose travel times change K
+times a day; which exact engine minimizes compute per day, including keeping its index current?
+Daily core-hours are C = R q / 10⁹ + K u / 3,600, with q the core-hours per billion requests and u
+the core-seconds per update, both measured on one thread in the same run.
+
+Eight Korean cities, nine travel-time sets each (the dataset's free-flow speed and its eight weekday
+time slots), the same 1,000 requests per city as above in integer milliseconds. 72,000 certified
+shortest-path trees, one per request and travel-time set, are the reference; every answer an engine
+gave was checked against them, none wrong. The indexed engines answered every request on every slot;
+the Dijkstra searches answered each request on one slot per pass. Three timing passes, each covering
+all eight slots in random order with requests in random order; ranges are the spread over passes.
+Request costs average over all 1,000 requests, including those with identical endpoints and those
+with no route (requests with a route: Busan 990, Daegu 822, Daejeon 987, Gwangju 987, Incheon 679,
+Sejong 970, Seoul 988, Ulsan 992). Bidirectional Dijkstra is given no update cost; its reverse graph
+is rebuilt per slot outside the timing.
+
+Median over eight cities (range):
+
+| Engine | q, core-hours per billion requests | u, core-seconds per update | One-time preparation, s |
+| --- | ---: | ---: | ---: |
+| Plain Dijkstra | 788 (415–2,513) | none | none |
+| Bidirectional Dijkstra | 676 (243–1,517) | none | none |
+| Overlay, junction cut, U = 1,024 | 23.9 (17.5–75.2) | 0.067 (0.023–0.235) | 9.6 (3.6–51.8) |
+| Overlay, junction cut, U = 4,096 | 51.4 (42.6–94.4) | 0.116 (0.042–0.405) | 9.2 (3.0–48.9) |
+| CH, rebuilt per update (`fast_paths` 1.0) | 4.0 (3.0–7.8) | 0.802 (0.300–3.11) | none |
+| CH, re-contracted in the free-flow node order | 4.5 (3.8–11.5) | 0.249 (0.099–0.896) | 0.8 (0.3–2.7) |
+| CCH (this repository) | 6.9 (4.4–14.8) | 0.0074 (0.0029–0.0213) | 11.2 (4.0–55.8) |
+
+Break-even updates per day, from the means over passes (range over the three passes). Both
+thresholds scale with request volume: at 10 million requests a day, multiply by ten.
+
+| City | Junctions | CH rebuilt → fixed order, per 10⁶ requests | Fixed order → CCH, per 10⁶ requests | Fixed order → CCH, per 10⁷ requests |
+| --- | ---: | ---: | ---: | ---: |
+| Sejong | 85,647 | 3 (2–5) | 52 (46–58) | 519 (462–575) |
+| Daejeon | 95,765 | 7 (6–9) | 55 (53–57) | 546 (533–568) |
+| Gwangju | 132,467 | 7 (7–7) | 79 (77–81) | 791 (768–807) |
+| Ulsan | 146,901 | 8 (6–8) | 30 (28–30) | 296 (284–301) |
+| Daegu | 153,887 | 4 (4–4) | 24 (22–25) | 238 (223–246) |
+| Busan | 157,831 | 4 (4–5) | 36 (34–37) | 359 (343–371) |
+| Incheon | 247,862 | 2 | 3 | 28 |
+| Seoul | 328,610 | 6 (6–7) | 13 (12–14) | 134 (118–141) |
+
+In Incheon the three hierarchies' break-even points lie within about one update a day per million
+requests of each other, and the passes disagree on the order of the switches. In Sejong, the rebuilt
+and fixed-order CH request costs are not distinguishable. A Dijkstra search without an index
+(bidirectional in six cities, plain in Daegu and Incheon) becomes cheapest only above 210,000–435,000
+updates a day per million requests; at 100,000 requests a day that is 21,000–44,000 updates.
+
+What the numbers mean for a service:
+
+- Refreshing traffic every 15 minutes is 96 updates a day. At a million requests a day that favours
+  the CCH in every city; at ten million it favours the CCH only in Incheon and the fixed-order CH
+  elsewhere.
+- Absolute compute is small at these sizes: at ten million requests and 96 updates a day the cheapest
+  engine needs at most 0.14 core-hours a day in any city. The choice matters for many cities, larger
+  networks or far higher volumes.
+- Every update here starts from scratch; none is incremental. The CCH update is a full
+  customization in 3–21 ms; a production system would also have to ship the new weights to its
+  workers, which is not timed.
+
+Cost of ignoring traffic. For each request, the route chosen on stale times (free flow, or the
+previous slot) is priced on the actual slot's times and compared with the best route for that slot.
+Regret is the extra travel time; the ETA error compares the stale prediction with the actual optimum.
+Means over the eight free-flow transitions, or over the seven informative consecutive transitions
+(midday → afternoon is excluded: the two slots are identical). The consecutive transitions include
+night → morning peak, which wraps to the start of the next day, and four of the eight slots are
+derived from the observed ones, so consecutive slots are closer than real time steps:
+
+| City | Requests | Free flow: mean regret | worst slot p95 | trips ≥ 5% slower | ETA error, mean abs | Previous slot: mean regret | worst slot p95 | trips ≥ 5% slower | route changes | ETA error, mean abs |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Sejong | 898 | 3.6% | 26% | 22% | 23% | 0.42% | 6.1% | 2.0% | 25% | 6.7% |
+| Seoul | 929 | 7.5% | 33% | 42% | 37% | 0.84% | 9.0% | 4.8% | 38% | 8.5% |
+| Busan | 927 | 5.4% | 25% | 31% | 29% | 0.48% | 3.8% | 2.0% | 33% | 6.9% |
+| Daegu | 745 | 4.1% | 27% | 24% | 28% | 0.44% | 2.6% | 1.5% | 25% | 6.9% |
+| Incheon | 604 | 3.6% | 22% | 20% | 36% | 0.24% | 1.1% | 0.7% | 15% | 6.3% |
+| Gwangju | 915 | 5.3% | 29% | 30% | 28% | 0.58% | 3.8% | 2.3% | 30% | 7.1% |
+| Daejeon | 922 | 7.3% | 38% | 36% | 26% | 0.59% | 5.7% | 2.7% | 30% | 6.5% |
+| Ulsan | 930 | 4.4% | 37% | 27% | 23% | 0.64% | 14.7% | 2.0% | 25% | 6.0% |
+
+Requests are the reachable pairs with distinct endpoints. Between the four observed slots only
+(morning peak → midday → evening peak → off-peak → morning peak) mean regret is 0.5–2.0% (Incheon
+0.54%, Seoul 1.97%); per-transition rows are in [`results/traffic.md`](results/traffic.md), series
+`observed`. The fastest route changes between
+consecutive slots for 15–38% of trips, but the old route is rarely much slower: stale ETAs are the
+larger error. On the uniform-pair half of the workload, which holds the longer trips, free-flow
+predictions underestimate the actual optimum by 9–37% on average (Seoul 37%), and regret is
+6.4–13.4%.
+
+Limits of this study:
+
+- The dataset's free-flow speed is a fixed speed by road class (`default_speed_kmh`; the
+  `free_flow_speed_kmh` column of its examples file equals it on all 1,048,576 rows that file shares
+  with the nationwide file). It is below the observed slot speed on 12–55% of roads, by city and slot
+  (Seoul 12–20%, Incheon and Ulsan up to 55%), so free-flow regret mixes congestion with an outdated
+  speed table. Four slots are observed (morning peak, midday, evening peak, evening off-peak; KTDB 2024);
+  four are derived by the dataset. The derived afternoon slot equals midday on every road in Sejong
+  and gives identical travel times for every request in all eight cities. The dataset gives no clock
+  hours; the slot order is its column order.
+- Workload: the frozen uniform-pair and random-walk requests. No public origin–destination source
+  passed verification: KTDB OD tables need KTDB access, the open Korean OD files found count bus and
+  subway trips by district, and NYC taxi trips map onto a network with no time slots. LargeST and
+  PeMS sensor speeds would need map-matching and were rejected.
+- The partition of the overlays reads no travel times, so a partition built on any slot is the same
+  partition (a test checks this on four metrics); a weight-aware partition was not tested. The CH
+  order for re-contraction comes from the free-flow CH.
+- Both CHs and the CCH return the route with each answer; the overlays and Dijkstra searches return
+  travel times only, which favours them. No maintained Rust CCH crate was found; the CCH here uses
+  nested dissection from the same inertial-flow separators as the overlays and the basic (not
+  perfect) customization.
+- One CI run per city on 4-vCPU Linux runners, `fast_paths` 1.0, Rust stable. Raw per-city files
+  are CI artifacts; [`results/traffic.jsonl`](results/traffic.jsonl) keeps the summaries with each
+  raw file's SHA-256 and the source URL, revision, licence and hashes. The Korea Road Network ETA
+  data is CC BY-NC 4.0: these results are for non-commercial use.
+- Data: [`results/traffic.md`](results/traffic.md); workflow `.github/workflows/traffic.yml`, run
+  [45659518061](https://github.com/symonyeal/Exact-Routing/actions/runs/45659518061) at commit
+  815df09.
 
 ## Findings
 
@@ -165,7 +288,10 @@ src/graph.rs     sparse graph: direction-optimizing BFS, Dijkstra, shortest-path
 src/road.rs      validated road binary: coordinates, arcs, travel times
 src/overlay.rs   inertial-flow partition (edge or junction cut), two-level overlay, query
 src/query.rs     reusable bidirectional Dijkstra
-src/ch.rs        validated adapter to the fast_paths contraction hierarchy
+src/ch.rs        validated adapter to the fast_paths contraction hierarchy, rebuilt or fixed-order
+src/cch.rs       customizable contraction hierarchy: order, elimination, customization, query, paths
+src/bin/traffic.rs nine travel-time sets: certified costs, regret, update and request timing
+scripts/traffic.py fetch slot speeds, run, break-even and regret summaries -> results/traffic.*
 src/bin/metro.rs certified workload, paired latency, throughput, builds   -> results/metro.jsonl
 scripts/metro.py validate all eleven cities, write the report               -> results/metro.md
 scripts/page.py  normalize the retained results for the page                -> site/data.js
@@ -209,6 +335,10 @@ cargo build --release --bin metro
 python scripts/metro.py run data/roads/london-large.bin results/metro/london-large.jsonl
 python scripts/metro.py report results/metro.jsonl --output results/metro.md
 python scripts/query_order.py                 # request-order diagnostic, local
+python scripts/traffic.py fetch sejong        # nine travel-time sets for one region
+cargo build --release --bin traffic
+python scripts/traffic.py run sejong results/traffic/sejong.jsonl --queries 1000 --repeats 3
+python scripts/traffic.py report results/traffic  # results/traffic.jsonl and traffic.md
 python scripts/page.py                        # site/data.js from results/
 python scripts/figure.py                      # site/sejong-query.png, needs data/roads/sejong.bin
 ```
@@ -226,8 +356,9 @@ rebuilds, SALSA-CLRS and Sejong. Protocol: [`docs/sparse.md`](docs/sparse.md).
 
 ## Limits
 
-- Overlay re-weighting alone, multilevel overlays, memory of the searches and the contraction
-  hierarchy, and cost in currency are not measured (overlay array sizes are in `metro.jsonl`). Customizable contraction hierarchies and hub labels are not implemented.
+- Multilevel overlays, incremental updates, memory of the searches and the hierarchies, and cost in
+  currency are not measured (overlay array sizes are in `metro.jsonl`). Hub labels are not
+  implemented.
 - One benchmark run per city on CI runners whose processors differ; engine comparisons are paired
   within each city. The maze and two-region road timings come from one laptop. Node, arc and settled
   counts are deterministic.
@@ -252,7 +383,7 @@ rebuilds, SALSA-CLRS and Sejong. Protocol: [`docs/sparse.md`](docs/sparse.md).
 | `tests/` | grids against exhaustive path enumeration and queue search; graph searches against Bellman–Ford; overlays against Dijkstra; certificate mutations |
 | `benches/grid.rs` | maze timing, peak heap and generated-grid scaling against the rivals |
 | `scripts/` | dataset converters, metro runner and report, tie-rule search, page data and figure |
-| `results/` | retained measurements: `eval.jsonl`, `bench.md`, `ties.txt`, `salsa.jsonl`, `roads.jsonl`, `metro.jsonl`, `metro.md`, `query-order.json`, `insights.md` |
+| `results/` | retained measurements: `eval.jsonl`, `bench.md`, `ties.txt`, `salsa.jsonl`, `roads.jsonl`, `metro.jsonl`, `metro.md`, `query-order.json`, `insights.md`, `traffic.jsonl`, `traffic.md` |
 | `docs/` | `grid.md` (maze proofs and costs), `sparse.md` (SALSA-CLRS, overlays, cut models, city protocol) |
 | `site/` | the results page; `data.js` and `sejong-query.png` are generated |
 

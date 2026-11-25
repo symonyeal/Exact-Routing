@@ -95,3 +95,13 @@ td { border-bottom: 1px solid var(--rule); padding: 9px 10px 9px 0; vertical-ali
   .decide td:nth-child(2) { white-space: normal; }
 }
 .aside { color: var(--muted); font-size: 13.5px; margin: -2px 0 12px; }
+.plot .band0 { fill: var(--accent); fill-opacity: .12; }
+.plot .band1 { fill: var(--accent-2); fill-opacity: .38; }
+.plot .band3 { fill: var(--muted); fill-opacity: .4; }
+.plot .band2 { fill: var(--context); fill-opacity: .25; }
+.plot .boundary { fill: none; stroke: var(--ink); stroke-width: 2; }
+.plot .cityline { fill: none; stroke: var(--accent); stroke-width: 1; stroke-opacity: .55; }
+.plot .inband { fill: var(--ink); font-size: 13px; font-weight: 600; }
+.plot .p95 { stroke: var(--warn); stroke-width: 2.5; }
+.plot .legend { fill: var(--muted); font-size: 12px; }
+#traffic-table td:not(:first-child), #traffic-table th:not(:first-child) { text-align: right; }

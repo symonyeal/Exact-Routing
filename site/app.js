@@ -43,6 +43,7 @@ function facts() {
     maze_us: num(wave.median_us, 2),
     maze_heap: `${num(wave.heap_bytes / 1000, 1)} KB`,
     salsa: num(D.salsa.graphs),
+    ...trafficFacts(),
   };
   for (const el of document.querySelectorAll("[data-fact]")) el.textContent = values[el.dataset.fact];
   const producer = document.getElementById("producer");
@@ -179,10 +180,205 @@ function mazeChart() {
   mount("maze-chart", W, H, g);
 }
 
-function draw() { costChart(); cutChart(); orderChart(); mazeChart(); }
+// Traffic exhibits: daily cost frontier, update cost, regret of stale routing, route changes by slot.
+const T = D.traffic;
+const regions = T ? T.regions : [];
+const slotName = { free: "free flow", am_peak: "morning peak", am_shoulder: "after morning peak", midday: "midday",
+  afternoon: "afternoon", pm_peak: "evening peak", pm_shoulder: "after evening peak", offpeak: "evening off-peak", night: "night" };
+const tlabel = T ? Object.fromEntries(T.engines.map((e) => [e.id, e.label])) : {};
+const sw = (r, R, to) => { const b = r.breakeven.find((x) => x.requests === R); const s = b && b.switches.find((x) => x.to === to); return s ? s.k : null; };
+const regretRows = (r, series) => r.regret.filter((x) => x.group === "all" && x.series === series);
+const seriesHead = { free: "Routed on free flow", consecutive: "Routed on the previous slot", observed: "Routed on the previous observed slot" };
+const abbreviate = (s) => s.replace("after ", "post ").replace("evening ", "eve. ").replace("morning ", "morn. ");
+const meanOf = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+// The dataset's derived afternoon slot repeats midday, so that transition carries no change.
+const informative = (x) => !(x.from === "midday" && x.to === "afternoon");
+
+// Updates per day per daily request above which the cheaper Dijkstra search beats the CCH: no index.
+const dijkstraSlope = (r) => {
+  const e = r.engines, q = Math.min(e.dijkstra.q, e.bidirectional.q);
+  return (q - e.CCH.q) / 1e9 * 3600 / e.CCH.u;
+};
+
+function trafficFacts() {
+  if (!T) return {};
+  const k1 = regions.map((r) => sw(r, 1e6, "CCH")).filter((k) => k !== null);
+  const kf = regions.map((r) => sw(r, 1e6, "fast_paths-CH-fixed-order")).filter((k) => k !== null);
+  const u = (e) => median(regions.map((r) => r.engines[e].u));
+  const free = regions.map((r) => meanOf(regretRows(r, "free").map((x) => x.mean)));
+  const free5 = regions.map((r) => meanOf(regretRows(r, "free").map((x) => x.share_ge5)));
+  const prev = regions.map((r) => meanOf(regretRows(r, "consecutive").filter(informative).map((x) => x.mean)));
+  const prevChange = regions.map((r) => meanOf(regretRows(r, "consecutive").filter(informative).map((x) => x.share_changed)));
+  const obs = regions.map((r) => meanOf(regretRows(r, "observed").map((x) => x.mean)));
+  const kd = regions.map((r) => Math.round(dijkstraSlope(r) * 1e6 / 5000) * 5000);
+  const overlayWins = regions.filter((r) => r.breakeven.some((b) => b.static.startsWith("overlay") || b.switches.some((s) => s.to.startsWith("overlay")))).length;
+  const pct1 = (x) => `${num(100 * x, 1)}%`;
+  return {
+    tr_regions: num(regions.length),
+    abs_max: num(Math.max(...regions.map((r) => Math.min(...Object.values(r.engines).map((e) => 1e7 * e.q / 1e9 + 96 * e.u / 3600)))), 2),
+    tr_trees: num(regions.reduce((a, r) => a + r.trees, 0)),
+    k_cch: `${num(Math.min(...k1))}–${num(Math.max(...k1))}`,
+    k_cch_med: num(median(k1)),
+    k_fix: `${num(Math.min(...kf), 1)}–${num(Math.max(...kf), 1)}`,
+    u_ch: `${num(u("fast_paths-CH"), 2)} s`,
+    u_fix: `${num(u("fast_paths-CH-fixed-order"), 2)} s`,
+    u_cch: `${num(1000 * u("CCH"), 1)} ms`,
+    u_ov: `${num(1000 * u("overlay-1024"))} ms`,
+    q_ratio: `${num(median(regions.map((r) => r.engines.CCH.q / r.engines["fast_paths-CH"].q)), 1)}×`,
+    overlay_wins: overlayWins === 0 ? "in none" : `in ${overlayWins}`,
+    free_mean: `${pct1(Math.min(...free))}–${pct1(Math.max(...free))}`,
+    free_5: `${num(100 * Math.min(...free5))}–${num(100 * Math.max(...free5))}%`,
+    prev_mean: `${pct1(Math.min(...prev))}–${pct1(Math.max(...prev))}`,
+    prev_change: `${num(100 * Math.min(...prevChange))}–${num(100 * Math.max(...prevChange))}%`,
+    obs_mean: `${pct1(Math.min(...obs))}–${pct1(Math.max(...obs))}`,
+    k_dij: `${num(Math.min(...kd))}–${num(Math.max(...kd))}`,
+  };
+}
+
+function trafficTable() {
+  if (!T) return;
+  document.querySelector("#traffic-table tbody").innerHTML = T.engines.map(({ id }) => {
+    const v = regions.map((r) => r.engines[id]);
+    const q = v.map((x) => x.q / 1000), u = v.map((x) => x.u), ix = v.map((x) => x.index), p = v.map((x) => x.prepare_s);
+    const rng = (xs, f) => `${f(median(xs))} (${f(Math.min(...xs))}–${f(Math.max(...xs))})`;
+    const s3 = (x) => (x >= 1 ? num(x, 2) : x >= 0.01 ? num(x, 3) : num(x, 4));
+    return `<tr><td>${tlabel[id]}</td><td>${rng(q, s3)}</td><td>${rng(ix, (x) => num(x, x < 10 ? 1 : 0))}</td>` +
+      `<td>${Math.max(...u) === 0 ? "none" : rng(u, s3)}</td><td>${Math.max(...p) === 0 ? "none" : rng(p, (x) => num(x, 1))}</td></tr>`;
+  }).join("");
+}
+
+// Exhibit: cheapest engine over (requests per day, updates per day), median-city boundaries shaded.
+function frontierChart() {
+  const small = narrow(), W = small ? 400 : 960, left = small ? 52 : 70, right = W - (small ? 44 : 170), top = 30, bottom = small ? 340 : 440;
+  const x0 = 5, x1 = 9, y1 = Math.log10(T.k_max);
+  const X = (R) => left + (Math.log10(R) - x0) / (x1 - x0) * (right - left);
+  const Y = (K) => bottom - Math.log10(K) / y1 * (bottom - top);
+  const clipK = (k) => Math.min(Math.max(k, 1), T.k_max);
+  const alpha = (to) => median(regions.map((r) => sw(r, 1e6, to) / 1e6).filter((a) => a > 0));
+  const a1 = alpha("fast_paths-CH-fixed-order"), a2 = alpha("CCH"), a3 = median(regions.map(dijkstraSlope));
+  const Rs = [];
+  for (let e = x0; e <= x1 + 1e-9; e += 0.05) Rs.push(10 ** e);
+  const curve = (a) => Rs.map((R) => [X(R), Y(clipK(a * R))]);
+  const pts = (ps) => ps.map((p) => p.join(",")).join(" ");
+  const c1 = curve(a1), c2 = curve(a2), c3 = curve(a3);
+  let g = el("polygon", { points: pts([[X(1e5), Y(1)], ...c1, [X(1e9), Y(1)]]), class: "band2" }, title("Contraction hierarchy, rebuilt per update"));
+  g += el("polygon", { points: pts([...c1, ...c2.slice().reverse()]), class: "band1" }, title("Contraction hierarchy, re-contracted in a fixed order"));
+  g += el("polygon", { points: pts([...c2, ...c3.slice().reverse()]), class: "band0" }, title("Customizable contraction hierarchy"));
+  g += el("polygon", { points: pts([[X(1e5), Y(T.k_max)], ...c3]), class: "band3" }, title("Dijkstra search without an index"));
+  g += el("polyline", { points: pts(c1), class: "boundary" }) + el("polyline", { points: pts(c2), class: "boundary" }) +
+    el("polyline", { points: pts(c3), class: "boundary" });
+  for (const r of regions) {
+    const k = sw(r, 1e6, "CCH");
+    if (k) g += el("polyline", { points: pts(curve(k / 1e6)), class: "cityline" }, title(`${r.label}: customizable hierarchy cheapest above ${num(k, 1)} updates per day per million requests`));
+  }
+  for (const [K, s] of [[96, "every 15 minutes"], [1440, "every minute"], [86400, "every second"]]) {
+    g += el("line", { x1: left, x2: right, y1: Y(K), y2: Y(K), class: "ref" });
+    g += text(right + 6, Y(K) + 4, small ? num(K) : `${num(K)} · ${s}`, { class: "small" });
+  }
+  for (const e of [5, 6, 7, 8, 9]) {
+    g += el("line", { x1: X(10 ** e), x2: X(10 ** e), y1: top, y2: bottom, class: "grid" });
+    g += text(X(10 ** e), bottom + 18, small ? `10^${e}` : num(10 ** e), { class: "tick", "text-anchor": "middle" });
+  }
+  for (const e of [0, 1, 2, 3, 4]) g += text(left - 8, Y(10 ** e) + 4, num(10 ** e), { class: "tick", "text-anchor": "end" });
+  g += text(left, bottom + 40, "Route requests per day (log scale)", { class: "axis" });
+  g += text(0, top - 4, "Updates per day", { class: "axis" });
+  g += text(X(10 ** 7.6), Y(2), small ? "CH, rebuilt" : "Contraction hierarchy, rebuilt per update", { class: "inband" });
+  const Rl = 10 ** (small ? 6.9 : 7.3), Kl = Math.sqrt(a1 * a2) * Rl;
+  g += el("text", { x: X(Rl), y: Y(Kl) + 4, class: "inband", "text-anchor": "middle",
+    transform: `rotate(${(-Math.atan2(Y(Kl) - Y(Kl * 10), X(Rl * 10) - X(Rl)) * 180 / Math.PI).toFixed(1)} ${X(Rl)} ${Y(Kl)})` }, small ? "CH, fixed order" : "Contraction hierarchy, fixed node order");
+  g += text(X(10 ** (small ? 5.9 : 5.6)), Y(1500), small ? "Customizable CH" : "Customizable contraction hierarchy", { class: "inband" });
+  if (!small) g += text(X(10 ** 5.01), Y(70000) + 4, "Dijkstra", { class: "small" });
+  mount("frontier-chart", W, bottom + 52, g);
+}
+
+// Exhibit: seconds to take in one new metric, by engine, one dot per region, log axis.
+function updateChart() {
+  const ids = ["overlay-1024", "overlay-4096", "fast_paths-CH", "fast_paths-CH-fixed-order", "CCH"];
+  const short = { "overlay-1024": "Overlay, 1,024", "overlay-4096": "Overlay, 4,096", "fast_paths-CH": "CH, rebuilt", "fast_paths-CH-fixed-order": "CH, fixed order", CCH: "Customizable CH" };
+  const small = narrow(), W = small ? 400 : 960, left = small ? 118 : 270, right = W - 24, row = 50, top = 22;
+  const lo = -3, hi = 1, X = (v) => left + (Math.log10(v) - lo) / (hi - lo) * (right - left);
+  const H = top + row * ids.length + 44;
+  let g = "";
+  for (const t of [0.001, 0.01, 0.1, 1, 10]) {
+    g += el("line", { x1: X(t), x2: X(t), y1: top - 6, y2: top + row * ids.length, class: "grid" });
+    g += text(X(t), top + row * ids.length + 18, t < 1 ? `${num(1000 * t)} ms` : `${num(t)} s`, { class: "tick", "text-anchor": "middle" });
+  }
+  g += text(left, H - 4, "Core-seconds per update, one thread (log scale)", { class: "axis" });
+  ids.forEach((id, i) => {
+    const y = top + row * i + row / 2;
+    g += text(left - 12, y + 4, small ? short[id] : tlabel[id], { class: "cat", "text-anchor": "end" });
+    for (const r of regions) g += el("circle", { cx: X(r.engines[id].u), cy: y, r: 5, class: "dot" }, title(`${r.label}: ${num(r.engines[id].u, 4)} s per update`));
+    const m = median(regions.map((r) => r.engines[id].u));
+    g += el("line", { x1: X(m), x2: X(m), y1: y - 15, y2: y + 15, class: "median" });
+    g += text(X(m), y - 19, m < 1 ? `${num(1000 * m, m < 0.01 ? 1 : 0)} ms` : `${num(m, 2)} s`, { class: "value", "text-anchor": "middle" });
+  });
+  mount("update-chart", W, H, g);
+}
+
+// Exhibit: regret of routing on stale times per transition, median region, with its p95.
+function regretChart() {
+  const ts = regions[0].regret.filter((x) => x.group === "all").map((x) => [x.series, x.from, x.to]);
+  const small = narrow(), W = small ? 400 : 960, left = small ? 130 : 300, right = W - (small ? 70 : 120), row = 26, top = small ? 56 : 30, gap = 34;
+  const order = [...new Set(ts.map(([s]) => s))];
+  const H = top + row * ts.length + gap * (order.length - 1) + 48;
+  const X = (v) => left + v / 0.3 * (right - left);
+  const lx = small ? 0 : left;
+  let g = el("rect", { x: lx, y: 4, width: 12, height: 12, class: "s1" }) + text(lx + 18, 14, "Mean", { class: "legend" }) +
+    el("line", { x1: lx + 90, x2: lx + 90, y1: 3, y2: 17, class: "p95" }) + text(lx + 98, 14, "95th percentile", { class: "legend" });
+  const yEnd = top + row * ts.length + gap * (order.length - 1);
+  for (const t of [0, 0.1, 0.2, 0.3]) {
+    g += el("line", { x1: X(t), x2: X(t), y1: top - 4, y2: yEnd, class: "grid" });
+    g += text(X(t), yEnd + 16, pct(t), { class: "tick", "text-anchor": "middle" });
+  }
+  g += text(left, H - 4, small ? "Extra travel time, median region" : "Extra travel time of the route chosen on stale times, median region", { class: "axis" });
+  ts.forEach(([s, f, t], i) => {
+    const y = top + row * i + gap * order.indexOf(s);
+    if (i === 0 || ts[i - 1][0] !== s)
+      g += text(small ? 0 : left - 10, y - 8, small ? `${seriesHead[s]}, to:` : seriesHead[s], { class: "cat strong", "text-anchor": small ? "start" : "end" });
+    const vals = regions.map((r) => r.regret.find((x) => x.group === "all" && x.series === s && x.from === f && x.to === t));
+    const m = median(vals.map((x) => x.mean)), p = median(vals.map((x) => x.p95)), s5 = median(vals.map((x) => x.share_ge5));
+    const name = f === "free" ? `→ ${slotName[t]}` : `${slotName[f]} → ${slotName[t]}`;
+    g += text(left - 10, y + row / 2 + 4, small ? abbreviate(slotName[t]) : name, { class: "cat", "text-anchor": "end" });
+    g += el("rect", { x: X(0), y: y + 5, width: Math.max(X(m) - X(0), 1), height: row - 10, class: "s1" },
+      title(`${name}: mean ${num(100 * m, 2)}%, p95 ${num(100 * p, 1)}%, ${num(100 * s5, 1)}% of trips 5% or more slower (median region)`));
+    g += el("line", { x1: X(p), x2: X(p), y1: y + 3, y2: y + row - 3, class: "p95" });
+    g += text(Math.max(X(p), X(m)) + 6, y + row / 2 + 4, small ? `${num(100 * m, 1)}% · ${num(100 * p)}%` : `${num(100 * m, 1)}% mean · ${num(100 * p)}% p95`, { class: "small" });
+  });
+  mount("regret-chart", W, H, g);
+}
+
+// Exhibit: share of trips whose previous-slot route is no longer fastest, one dot per region.
+function changeChart() {
+  const ts = regions[0].regret.filter((x) => x.group === "all" && x.series === "consecutive").map((x) => [x.from, x.to]);
+  const small = narrow(), W = small ? 400 : 960, left = small ? 130 : 300, right = W - 30, row = 34, top = 8;
+  const H = top + row * ts.length + 40;
+  const X = (v) => left + v / 0.5 * (right - left);
+  let g = "";
+  for (const t of [0, 0.1, 0.2, 0.3, 0.4, 0.5]) {
+    g += el("line", { x1: X(t), x2: X(t), y1: top, y2: top + row * ts.length, class: "grid" });
+    g += text(X(t), top + row * ts.length + 16, pct(t), { class: "tick", "text-anchor": "middle" });
+  }
+  g += text(left, H - 4, small ? "Trips with a new fastest route" : "Trips whose previous-slot route is no longer the fastest", { class: "axis" });
+  ts.forEach(([f, t], i) => {
+    const y = top + row * i + row / 2;
+    g += text(left - 10, y + 4, small ? `to ${abbreviate(slotName[t])}` : `${slotName[f]} → ${slotName[t]}`, { class: "cat", "text-anchor": "end" });
+    const v = regions.map((r) => [r, r.regret.find((x) => x.group === "all" && x.series === "consecutive" && x.from === f && x.to === t)]);
+    for (const [r, x] of v) g += el("circle", { cx: X(x.share_changed), cy: y, r: 5, class: "dot" }, title(`${r.label}: ${num(100 * x.share_changed, 1)}% of ${num(x.pairs)} trips`));
+    const m = median(v.map(([, x]) => x.share_changed));
+    g += el("line", { x1: X(m), x2: X(m), y1: y - 13, y2: y + 13, class: "median" });
+    g += text(X(m) + 8, y - 8, pct(m), { class: "value" });
+  });
+  mount("change-chart", W, H, g);
+}
+
+function draw() {
+  costChart(); cutChart(); orderChart(); mazeChart();
+  if (T) { frontierChart(); updateChart(); regretChart(); changeChart(); }
+}
 
 facts();
 table();
+trafficTable();
 draw();
 let width = window.innerWidth;
 window.addEventListener("resize", () => {
