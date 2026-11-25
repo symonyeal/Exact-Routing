@@ -54,21 +54,28 @@ def encode(nodes, edges, slot):
     if oneway.isna().any() or not oneway.isin([True, False]).all():
         raise ValueError("oneway values must be present booleans")
     two = ~oneway.to_numpy(bool)
-    kmh = edges[slot].fillna(edges.default_speed_kmh).to_numpy(np.float64)
+    tail, head = np.concatenate([u, v[two]]), np.concatenate([v, u[two]])
+    weights = seconds(edges, slot, two)
+    parts = [np.array([n, len(tail)], "<u8").tobytes()]
+    parts.extend(np.asarray(x, dtype).tobytes() for x, dtype in (
+        (lat, "<f8"), (lon, "<f8"), (tail, "<u4"), (head, "<u4"), (weights, "<f8")
+    ))
+    return b"".join(parts), n, len(tail)
+
+
+def seconds(edges, column, two):
+    """Arc travel times in seconds for one speed column, in the arc order of `encode`: each edge,
+    then the reverse of each two-way edge. Missing speeds take `default_speed_kmh`, then speeds are
+    clipped below at 5 km/h, the dataset card's rule."""
+    length = edges.length_m.to_numpy(np.float64)
+    kmh = edges[column].fillna(edges.default_speed_kmh).to_numpy(np.float64)
     kmh = np.maximum(kmh, 5.0)
     if not (np.isfinite(kmh).all() and (kmh > 0).all()):
         raise ValueError("effective speeds must be finite and positive")
     secs = length / (kmh / 3.6)
     if not np.isfinite(secs).all():
         raise ValueError("travel times must be finite")
-
-    tail, head = np.concatenate([u, v[two]]), np.concatenate([v, u[two]])
-    weights = np.concatenate([secs, secs[two]])
-    parts = [np.array([n, len(tail)], "<u8").tobytes()]
-    parts.extend(np.asarray(x, dtype).tobytes() for x, dtype in (
-        (lat, "<f8"), (lon, "<f8"), (tail, "<u4"), (head, "<u4"), (weights, "<f8")
-    ))
-    return b"".join(parts), n, len(tail)
+    return np.concatenate([secs, secs[two]])
 
 
 def _endpoints(edges, n):

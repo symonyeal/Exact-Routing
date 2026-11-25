@@ -237,20 +237,8 @@ def _validate_method_workers(scale, method, expected_builds, builds, latencies, 
         raise ValueError("missing or extra throughput thread counts")
 
 
-def command_run(args):
-    for value, label in ((args.queries, "queries"), (args.threads, "threads"), (args.repeats, "repeats")):
-        positive(value, label)
-    if args.threads > args.queries:
-        raise ValueError("threads must not exceed queries")
-    source_path = args.file
-    sidecar = source_path.with_suffix(".meta.json")
-    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
-    binary = source_path.read_bytes()
-    digest = hashlib.sha256(binary).hexdigest()
-    if digest != metadata.get("output_sha256"):
-        raise ValueError("input binary does not match source metadata")
-    repo = Path(__file__).resolve().parents[1]
-    executable = repo / "target" / "release" / ("metro.exe" if os.name == "nt" else "metro")
+def machine(repo):
+    """CPU, OS, compiler, Git state and build flags of this run."""
     cpu = platform.processor() or platform.machine() or "unknown"
     if sys.platform.startswith("linux"):
         try:
@@ -265,7 +253,7 @@ def command_run(args):
                       if line.startswith("MemTotal:"))
     except (OSError, StopIteration, ValueError):
         memory = None
-    provenance = {
+    return {
         "cpu": cpu,
         "os": platform.platform(aliased=True, terse=True),
         "compiler": subprocess.check_output(["rustc", "-Vv"], cwd=repo, text=True).strip(),
@@ -275,6 +263,23 @@ def command_run(args):
         "os_cpu_count": os.cpu_count(),
         "ram_bytes": memory,
     }
+
+
+def command_run(args):
+    for value, label in ((args.queries, "queries"), (args.threads, "threads"), (args.repeats, "repeats")):
+        positive(value, label)
+    if args.threads > args.queries:
+        raise ValueError("threads must not exceed queries")
+    source_path = args.file
+    sidecar = source_path.with_suffix(".meta.json")
+    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    binary = source_path.read_bytes()
+    digest = hashlib.sha256(binary).hexdigest()
+    if digest != metadata.get("output_sha256"):
+        raise ValueError("input binary does not match source metadata")
+    repo = Path(__file__).resolve().parents[1]
+    executable = repo / "target" / "release" / ("metro.exe" if os.name == "nt" else "metro")
+    provenance = machine(repo)
     records = []
     for scale in (0, 1000):
         print(f"{source_path.stem}: {args.queries} queries, scale {scale}", flush=True)

@@ -64,6 +64,30 @@ impl Graph {
             .zip(self.w[r].iter().copied())
     }
 
+    /// Arc weights in CSR order.
+    pub fn weights(&self) -> &[f64] {
+        &self.w
+    }
+
+    /// CSR indices of the arcs of the tree path from the root of `t` to v, last arc first. Each step
+    /// takes the first parallel arc (π(x), x) that is tight in `t`. Empty when v is the root or
+    /// unreached; `t` must be a certified tree of this graph.
+    pub fn path(&self, t: &Tree, v: usize) -> Vec<usize> {
+        let mut arcs = Vec::new();
+        let mut x = v;
+        while t.d[x].is_finite() && t.pi[x] as usize != x {
+            let u = t.pi[x] as usize;
+            let r = self.off[u]..self.off[u + 1];
+            let a = r.start + self.head[r.clone()].partition_point(|&h| (h as usize) < x);
+            let a = (a..r.end)
+                .find(|&a| t.d[u] + self.w[a] == t.d[x])
+                .expect("tree arc is not tight");
+            arcs.push(a);
+            x = u;
+        }
+        arcs
+    }
+
     fn degree(&self, u: usize) -> usize {
         self.off[u + 1] - self.off[u]
     }

@@ -99,15 +99,21 @@ pub fn build_parallel(
     model: Model,
     threads: usize,
 ) -> Overlay {
+    customize(g, &partition(g, xy, u, model), threads)
+}
+
+/// Compute the in-cell boundary distances of a fixed partition under the weights of `g`, with at
+/// most `threads` workers. `p` depends only on the topology and coordinates, so one partition serves
+/// every graph with the same arcs in the same CSR order; only `g.w` is read for the distances.
+pub fn customize(g: &Graph, p: &Partition, threads: usize) -> Overlay {
     let n = g.n;
-    assert!(u >= 2 && xy.len() == n && threads > 0);
+    assert!(threads > 0 && p.cell.len() == g.head.len() && p.home.len() == n);
     let Partition {
         cell,
         home,
         members,
-    } = partition(g, xy, u, model);
+    } = p;
     let cells = members.len();
-    let on = |v: usize| home[v] == NONE;
     let work = |lo: usize, cells: &[Vec<u32>]| {
         let mut over = Vec::new();
         let mut search = Search::new(n);
@@ -124,7 +130,7 @@ pub fn build_parallel(
         over
     };
     let mut over = if threads == 1 || members.is_empty() {
-        work(0, &members)
+        work(0, members)
     } else {
         let chunk = members.len().div_ceil(threads).max(1);
         std::thread::scope(|scope| {
@@ -149,11 +155,11 @@ pub fn build_parallel(
                 .map(|((_, &y), &w)| (x as u32, y, w)),
         );
     }
-    let boundary = (0..n).filter(|&v| on(v)).count();
+    let boundary = home.iter().filter(|&&c| c == NONE).count();
     let o = Graph::new(n, over);
     Overlay {
-        cell,
-        home,
+        cell: cell.clone(),
+        home: home.clone(),
         off: o.off,
         head: o.head,
         w: o.w,
@@ -162,13 +168,19 @@ pub fn build_parallel(
     }
 }
 
-struct Partition {
+/// A metric-independent partition: the cell of each arc in CSR order (NONE when cut), the cell of
+/// each interior node (NONE for a boundary node), and the boundary nodes of each cell.
+#[derive(PartialEq)]
+pub struct Partition {
     cell: Vec<u32>,
     home: Vec<u32>,
     members: Vec<Vec<u32>>,
 }
 
-fn partition(g: &Graph, xy: &[(f64, f64)], u: usize, model: Model) -> Partition {
+/// Partition the edges of g into cells of at most `u` nodes by recursive inertial-flow bisection.
+/// Reads the arcs' endpoints only, never their weights.
+pub fn partition(g: &Graph, xy: &[(f64, f64)], u: usize, model: Model) -> Partition {
+    assert!(u >= 2 && xy.len() == g.n);
     let n = g.n;
     // Undirected edges and, for each arc, its edge.
     let mut keys: Vec<(u32, u32, usize)> = (0..n)
@@ -242,9 +254,8 @@ fn endpoints(edges: &[(u32, u32)], piece: &[u32]) -> Vec<u32> {
     v
 }
 
-/// Split a piece's edges in two by the best of four inertial-flow cuts: project the nodes on a
-/// direction, take the first and last quarters as sources and sinks, and cut a minimum set of edges
-/// (graph model) or nodes (hypergraph model) between them. Graph-model cut edges are dropped.
+/// Split a piece's edges in two by the best of four inertial-flow cuts (see `separate`); graph-model
+/// cut edges are dropped.
 fn bisect(
     edges: &[(u32, u32)],
     piece: &[u32],
@@ -257,25 +268,7 @@ fn bisect(
         .iter()
         .map(|&e| (local(edges[e as usize].0), local(edges[e as usize].1)))
         .collect();
-    let k = nodes.len().div_ceil(4);
-    let mut best: Option<(usize, Vec<u8>)> = None;
-    for (p, q) in [(1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, -1.0)] {
-        let mut order: Vec<usize> = (0..nodes.len()).collect();
-        let proj = |i: usize| p * xy[nodes[i] as usize].0 + q * xy[nodes[i] as usize].1;
-        order.sort_by(|&i, &j| proj(i).total_cmp(&proj(j)));
-        let (size, side) = cut(
-            nodes.len(),
-            &ends,
-            &order[..k],
-            &order[nodes.len() - k..],
-            model,
-        );
-        if best.as_ref().is_none_or(|b| size < b.0) {
-            best = Some((size, side));
-        }
-    }
-    // side: 0 source side, 1 sink side, 2 separator node (hypergraph model).
-    let side = best.unwrap().1;
+    let side = separate(nodes, &ends, xy, model);
     let (mut a, mut b) = (Vec::new(), Vec::new());
     for (&e, &(x, y)) in piece.iter().zip(&ends) {
         match (side[x], side[y]) {
@@ -285,6 +278,36 @@ fn bisect(
         }
     }
     (a, b)
+}
+
+/// The side of each node of `nodes` (local edges `ends`) in the best of four inertial-flow cuts:
+/// project the nodes on a direction, take the first and last quarters as sources and sinks, and cut
+/// a minimum set of edges (graph model) or nodes (hypergraph model) between them. Side 0 is the
+/// source side, 1 the sink side, 2 a separator node (hypergraph model).
+pub(crate) fn separate(
+    nodes: &[u32],
+    ends: &[(usize, usize)],
+    xy: &[(f64, f64)],
+    model: Model,
+) -> Vec<u8> {
+    let k = nodes.len().div_ceil(4);
+    let mut best: Option<(usize, Vec<u8>)> = None;
+    for (p, q) in [(1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, -1.0)] {
+        let mut order: Vec<usize> = (0..nodes.len()).collect();
+        let proj = |i: usize| p * xy[nodes[i] as usize].0 + q * xy[nodes[i] as usize].1;
+        order.sort_by(|&i, &j| proj(i).total_cmp(&proj(j)));
+        let (size, side) = cut(
+            nodes.len(),
+            ends,
+            &order[..k],
+            &order[nodes.len() - k..],
+            model,
+        );
+        if best.as_ref().is_none_or(|b| size < b.0) {
+            best = Some((size, side));
+        }
+    }
+    best.unwrap().1
 }
 
 /// Minimum cut between node sets s and t by Dinic's blocking flows (1970), with

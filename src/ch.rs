@@ -17,6 +17,21 @@ pub struct Ch {
 impl Ch {
     /// Prepare a hierarchy from `g`, asserting the documented weight and graph bounds.
     pub fn new(g: &Graph) -> Ch {
+        Ch::prepared(g, None)
+    }
+
+    /// Re-contract `g` in a fixed node order, such as another metric's (`order`), instead of
+    /// choosing one; the hierarchy stays exact for any order.
+    pub fn with_order(g: &Graph, order: &[usize]) -> Ch {
+        Ch::prepared(g, Some(order))
+    }
+
+    /// The contraction order of this hierarchy, lowest first.
+    pub fn order(&self) -> Vec<usize> {
+        fast_paths::get_node_ordering(&self.graph)
+    }
+
+    fn prepared(g: &Graph, order: Option<&[usize]>) -> Ch {
         assert!(
             g.n as u128 <= u32::MAX as u128 + 1,
             "node IDs exceed Graph's u32 format"
@@ -48,10 +63,12 @@ impl Ch {
         );
         input.freeze();
         let nodes = input.get_num_nodes();
-        let graph = if input.get_num_edges() == 0 {
-            fast_paths::FastGraph::new(0)
-        } else {
-            fast_paths::prepare(&input)
+        let graph = match order {
+            _ if input.get_num_edges() == 0 => fast_paths::FastGraph::new(0),
+            None => fast_paths::prepare(&input),
+            Some(order) => {
+                fast_paths::prepare_with_order(&input, order).expect("invalid contraction order")
+            }
         };
         Ch {
             graph,

@@ -11,7 +11,7 @@ use route::ch::Ch;
 use route::graph::{Graph, check, dijkstra};
 use route::overlay::{Model, Overlay, Search, build_parallel};
 use route::query::BiSearch;
-use route::road::Road;
+use route::road::{Road, pairs};
 use serde_json::json;
 use std::hint::black_box;
 use std::time::Instant;
@@ -55,14 +55,6 @@ fn engine<'a>(j: usize, n: usize, overlays: &'a [Overlay], ch: Option<&'a Ch>) -
     }
 }
 
-fn mix(z: &mut u64) -> u64 {
-    *z = z.wrapping_add(0x9e3779b97f4a7c15);
-    let mut x = *z;
-    x = (x ^ x >> 30).wrapping_mul(0xbf58476d1ce4e5b9);
-    x = (x ^ x >> 27).wrapping_mul(0x94d049bb133111eb);
-    x ^ x >> 31
-}
-
 fn equal(a: f64, b: f64, integer: bool) -> bool {
     a == b
         || (!integer && a.is_finite() && b.is_finite() && (a - b).abs() <= 1e-9 * b.abs().max(1.0))
@@ -72,28 +64,6 @@ fn percentile(x: &[f64], p: f64) -> f64 {
     let mut x = x.to_vec();
     x.sort_unstable_by(f64::total_cmp);
     x[((p * x.len() as f64).ceil() as usize).max(1) - 1]
-}
-
-fn pairs(g: &Graph, q: usize) -> Vec<(usize, usize)> {
-    let n = g.n;
-    let mut z = 20261123;
-    (0..q)
-        .map(|i| {
-            let s = mix(&mut z) as usize % n;
-            let mut t = mix(&mut z) as usize % n;
-            if i % 4 < 2 {
-                t = s;
-                for _ in 0..if i % 4 == 0 { 8 } else { 32 } {
-                    let arcs: Vec<_> = g.arcs(t).collect();
-                    if arcs.is_empty() {
-                        break;
-                    }
-                    t = arcs[mix(&mut z) as usize % arcs.len()].0 as usize;
-                }
-            }
-            (s, t)
-        })
-        .collect()
 }
 
 fn build_overlays(
