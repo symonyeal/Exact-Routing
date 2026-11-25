@@ -52,6 +52,7 @@ ENGINES = ("dijkstra", "bidirectional", "overlay-1024", "overlay-4096", "fast_pa
            "overlay-1024-32768", "overlay-256-4096-65536")
 PREPARED = {"overlay-1024", "overlay-4096", "overlay-1024-32768", "overlay-256-4096-65536",
             "fast_paths-CH-fixed-order", "CCH"}
+SAME = ("CCH", "CCH-4-threads", "CCH-partial")
 PASSES, SLOT_COUNT = 3, len(traffic.SLOTS)
 SEQUENCES = ("weekday-consecutive", "weekday-observed", "weekend-consecutive", "weekend-observed", "synthetic")
 F = (0.001, 0.01, 0.1, 0.3, 0.6)
@@ -191,13 +192,16 @@ def validate(rows):
 
 def engines(rows):
     """q, u and their per-pass values for each engine of one size, as traffic.engines; u_wall for
-    the threaded engine, preparation seconds (mean over shards) and peak memory over baseline."""
+    the threaded engine, preparation seconds (mean over shards) and peak memory over baseline.
+    Engines of one SAME group answer with one query routine on bit-identical weights, so their q
+    pools all their timed queries; q_own keeps each engine's own."""
     out = {}
     memory = {r["method"]: r for r in rows if r["kind"] == "memory"}
+    rate = lambda s: sum(r["query_s"] for r in s) / sum(r["queries"] for r in s) * 1e9 / 3600
     for e in ENGINES:
         slot = [r for r in rows if r["kind"] == "slot" and r["method"] == e]
-        q_pass = [sum(r["query_s"] for r in slot if r["pass"] == p)
-                  / sum(r["queries"] for r in slot if r["pass"] == p) * 1e9 / 3600 for p in range(PASSES)]
+        pool = [r for r in rows if r["kind"] == "slot" and r["method"] in (SAME if e in SAME else (e,))]
+        q_pass = [rate([r for r in pool if r["pass"] == p]) for p in range(PASSES)]
         u_slot = [float(np.median([r["update_s"] for r in slot if r["slot"] == s])) for s in range(SLOT_COUNT)]
         u_pass = [float(np.mean([r["update_s"] for r in slot if r["pass"] == p])) for p in range(PASSES)]
         wall = [float(np.median([r["update_wall_s"] for r in slot if r["slot"] == s])) for s in range(SLOT_COUNT)]
@@ -205,8 +209,7 @@ def engines(rows):
                 and r["method"] == ("CCH" if e.startswith("CCH") else e)]
         m = memory.get(e, {})
         out[e] = {
-            "q": sum(r["query_s"] for r in slot) / sum(r["queries"] for r in slot) * 1e9 / 3600,
-            "q_pass": q_pass, "u": float(np.mean(u_slot)), "u_pass": u_pass, "u_wall": float(np.mean(wall)),
+            "q": rate(pool), "q_pass": q_pass, "q_own": rate(slot), "u": float(np.mean(u_slot)), "u_pass": u_pass, "u_wall": float(np.mean(wall)),
             "prepare_s": float(np.mean(prep)) if prep else 0.0, "prepare_runs": len(prep),
             "memory_bytes": (m["peak_rss_bytes"] - m["baseline_rss_bytes"])
             if m.get("peak_rss_bytes") is not None and m.get("baseline_rss_bytes") is not None else None,
