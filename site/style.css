@@ -66,6 +66,7 @@ h1 { font-size: clamp(26px, 3.4vw, 38px); line-height: 1.2; font-weight: 650; ma
 .plot .grid { stroke: var(--rule); stroke-width: 1; }
 .plot .ref { stroke: var(--ink); stroke-width: 1.5; stroke-dasharray: 4 3; }
 .plot .dot { fill: var(--accent-2); fill-opacity: .55; }
+.plot .dot.warn { fill: var(--warn); fill-opacity: 1; }
 .plot .median { stroke: var(--accent); stroke-width: 3; }
 .plot .s0 { fill: var(--accent); }
 .plot .s1 { fill: var(--accent-2); }

@@ -250,6 +250,17 @@ def crossing(f, ratio):
     return None
 
 
+def curve(ups, p=None):
+    """The points (f, u(f)/u_full) of the crossover: one per synthetic f, its mean over the four
+    observed transitions, and one for the dataset transitions that change an arc, their mean f and
+    ratio; from pass p's times when given."""
+    r = (lambda u: u["ratio"]) if p is None else (lambda u: u["partial_pass"][p] / u["full_pass"][p])
+    groups = [[u for u in ups if u["target_f"] == f] for f in F]
+    groups.append([u for u in ups if u["sequence"] != "synthetic" and u["changed"]])
+    return ([float(np.mean([u["f"] for u in g])) for g in groups],
+            [float(np.mean([r(u) for u in g])) for g in groups])
+
+
 def updates(rows):
     """One row per update a → b of the partial study: f, mean and per-pass partial and full
     core-seconds, their ratio and whether the per-pass ranges are distinguishable."""
@@ -344,16 +355,11 @@ def summarize(files):
                                         for x in passes)})
     ups = updates(rows)
     out += [{"kind": "update", "size": size, **u} for u in ups]
-    syn = [u for u in ups if u["sequence"] == "synthetic"]
-    data = [u for u in ups if u["sequence"] != "synthetic" and u["changed"]]
-    pts = [(u["f"], u["ratio"]) for u in syn + data]
-    out.append({"kind": "partial", "size": size,
-                "f_star": crossing(*zip(*pts)),
-                "f_star_pass": [crossing([u["f"] for u in syn + data],
-                                         [u["partial_pass"][p] / u["full_pass"][p] for u in syn + data])
-                                for p in range(PASSES)],
-                "ratio_by_f": {str(f): float(np.mean([u["ratio"] for u in syn if u["target_f"] == f])) for f in F},
-                "dataset_f": [float(min(u["f"] for u in data)), float(max(u["f"] for u in data))]})
+    f, ratio = curve(ups)
+    out.append({"kind": "partial", "size": size, "f": f, "ratio": ratio, "f_star": crossing(f, ratio),
+                "f_star_pass": [crossing(*curve(ups, p)) for p in range(PASSES)],
+                "dataset_f": [float(min(u["f"] for u in ups if u["sequence"] != "synthetic" and u["changed"])),
+                              float(max(u["f"] for u in ups if u["sequence"] != "synthetic" and u["changed"]))]})
     out += [{**r, "size": size} for r in routingkit(rows)]
     return out
 
@@ -382,8 +388,9 @@ def growth(rows):
     k = {r["size"]: r["k_cch"] for r in rows if r["kind"] == "breakeven" and r["requests"] == 10**6}
     pts = [(s["nodes"], k[s["size"]]) for s in sizes if k[s["size"]]]
     if len(pts) >= 2:
-        slope, _, se = fit(*zip(*pts))
-        out.append({"kind": "growth", "method": "K*", "sizes": len(pts), "c": slope, "c_se": se})
+        slope, c0, se = fit(*zip(*pts))
+        out.append({"kind": "growth", "method": "K*", "sizes": len(pts), "c": slope, "c_se": se,
+                    "log_intercept": c0})
     return out
 
 

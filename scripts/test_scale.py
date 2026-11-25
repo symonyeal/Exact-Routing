@@ -43,6 +43,17 @@ class Fits(unittest.TestCase):
         self.assertAlmostEqual(np.exp(c), 2.0)
         self.assertLess(se, 1e-9)
 
+    def test_curve_averages_each_f_and_the_dataset_transitions(self):
+        ups = [{"sequence": "synthetic", "target_f": f, "f": f, "changed": 1, "ratio": r, "partial_pass": [r] * 3,
+                "full_pass": [1.0] * 3} for f in scale.F for r in (0.5 * f / 0.01, 1.5 * f / 0.01)]
+        ups += [{"sequence": "weekday-consecutive", "target_f": None, "f": f, "changed": c, "ratio": 3.0,
+                 "partial_pass": [3.0] * 3, "full_pass": [1.0] * 3} for f, c in ((0.98, 1), (0.99, 1), (0.0, 0))]
+        f, r = scale.curve(ups)
+        self.assertEqual(f[:5], list(scale.F))
+        self.assertAlmostEqual(f[5], 0.985)
+        self.assertEqual(r[1], 1.0)
+        self.assertAlmostEqual(scale.crossing(f, r), 0.01)
+
     def test_crossing_interpolates_in_log_f(self):
         # Ratio 0.5 at f = 1% and 2 at f = 10%: the crossing is a third of the way in log f.
         f = scale.crossing([0.001, 0.01, 0.1], [0.2, 0.5, 2.0])
@@ -129,11 +140,10 @@ class Committed(unittest.TestCase):
 
     def test_partial_crossover_recomputes_from_update_rows(self):
         for p in (r for r in self.rows if r["kind"] == "partial"):
-            ups = [r for r in self.rows if r["kind"] == "update" and r["size"] == p["size"]
-                   and (r["sequence"] == "synthetic" or r["changed"])]
+            ups = [r for r in self.rows if r["kind"] == "update" and r["size"] == p["size"]]
             for u in ups:
                 self.assertAlmostEqual(u["ratio"], np.mean(u["partial_pass"]) / np.mean(u["full_pass"]))
-            f = scale.crossing([u["f"] for u in ups], [u["ratio"] for u in ups])
+            f = scale.crossing(*scale.curve(ups))
             self.assertEqual(f is None, p["f_star"] is None)
             if f is not None:
                 self.assertAlmostEqual(f, p["f_star"])

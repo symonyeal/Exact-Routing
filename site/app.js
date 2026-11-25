@@ -44,6 +44,7 @@ function facts() {
     maze_heap: `${num(wave.heap_bytes / 1000, 1)} KB`,
     salsa: num(D.salsa.graphs),
     ...trafficFacts(),
+    ...scaleFacts(),
   };
   for (const el of document.querySelectorAll("[data-fact]")) el.textContent = values[el.dataset.fact];
   const producer = document.getElementById("producer");
@@ -371,9 +372,105 @@ function changeChart() {
   mount("change-chart", W, H, g);
 }
 
+// Size study: K* against network size, and partial-update cost against changed-arc fraction.
+const SC = D.scale;
+const sizes = SC ? SC.sizes : [];
+const pow = (x) => { const e = Math.floor(Math.log10(x)); return x / 10 ** e === 1 ? `10^${e}` : num(x); };
+const fpct = (f) => (f < 0.01 ? `${num(100 * f, 1)}%` : `${num(100 * f)}%`);
+
+function scaleFacts() {
+  if (!SC) return {};
+  const ks = sizes.map((s) => s.k).filter((k) => k !== null);
+  const big = sizes[sizes.length - 1], cities = sizes.slice(0, 8), g = SC.growth["K*"];
+  const at = (f) => median(sizes.map((s) => s.ratio.find((r) => r.f === f).mean));
+  const fs = sizes.map((s) => s.f_star).filter((f) => f !== null);
+  return {
+    s_k_range: `${num(Math.min(...ks), 1)}–${num(Math.max(...ks), 1)}`,
+    s_k_city: `${num(Math.min(...cities.map((s) => s.k)), 1)}–${num(Math.max(...cities.map((s) => s.k)), 1)}`,
+    s_k_nation: big.k === null ? "never" : num(big.k, 1),
+    s_nation: num(big.nodes),
+    s_c: g ? `${num(g.c, 2)} ± ${num(g.c_se, 2)}` : "",
+    s_dir: g && g.c < 0 ? "falls" : "rises",
+    s_fstar: `${num(100 * Math.min(...fs), 1)}–${num(100 * Math.max(...fs), 1)}%`,
+    s_r001: `${num(at(0.001), 2)}`,
+    s_r01: `${num(at(0.01), 2)}`,
+    s_rdata: `${num(median(sizes.map((s) => s.dataset.ratio_mean)), 1)}`,
+    s_fdata: `${fpct(Math.min(...sizes.map((s) => s.dataset.f_min)))}–${fpct(Math.max(...sizes.map((s) => s.dataset.f_max)))}`,
+    s_sizes: num(sizes.length),
+    s_trees: num(sizes.reduce((a, s) => a + s.trees, 0)),
+  };
+}
+
+// Exhibit 11: K* per size on log-log axes, pass range as a bar, the fitted power law as a line.
+function kChart() {
+  const small = narrow(), W = small ? 400 : 960, left = small ? 52 : 70, right = W - (small ? 20 : 150), top = 24, bottom = small ? 300 : 380;
+  const ks = sizes.flatMap((s) => [s.k_range[0], s.k_range[1]]).filter((k) => k > 0);
+  const y0 = Math.floor(Math.log10(Math.min(...ks))), y1 = Math.ceil(Math.log10(Math.max(...ks)));
+  const x0 = 4.5, x1 = 7.5;
+  const X = (n) => left + (Math.log10(n) - x0) / (x1 - x0) * (right - left);
+  const Y = (k) => bottom - (Math.log10(k) - y0) / (y1 - y0) * (bottom - top);
+  let g = "";
+  for (let e = y0; e <= y1; e++) {
+    g += el("line", { x1: left, x2: right, y1: Y(10 ** e), y2: Y(10 ** e), class: "grid" });
+    g += text(left - 8, Y(10 ** e) + 4, num(10 ** e), { class: "tick", "text-anchor": "end" });
+  }
+  for (const n of [1e5, 1e6, 1e7]) {
+    g += el("line", { x1: X(n), x2: X(n), y1: top, y2: bottom, class: "grid" });
+    g += text(X(n), bottom + 18, small ? pow(n) : num(n), { class: "tick", "text-anchor": "middle" });
+  }
+  const fit = SC.growth["K*"];
+  if (fit) {
+    const line = (n) => Math.exp(fit.log_intercept) * n ** fit.c;
+    g += el("line", { x1: X(10 ** x0), y1: Y(line(10 ** x0)), x2: X(10 ** x1), y2: Y(line(10 ** x1)), class: "boundary" },
+      title(`Least-squares fit: K* ∝ n^${num(fit.c, 2)}`));
+  }
+  for (const s of sizes) {
+    if (s.k === null) continue;
+    g += el("line", { x1: X(s.nodes), x2: X(s.nodes), y1: Y(s.k_range[0]), y2: Y(s.k_range[1]), class: "median" });
+    g += el("circle", { cx: X(s.nodes), cy: Y(s.k), r: 5, class: "dot" }, title(`${s.label}: ${num(s.nodes)} junctions, K* = ${num(s.k, 1)} (passes ${num(s.k_range[0], 1)}–${num(s.k_range[1], 1)})`));
+    if (s.nodes > 5e5) g += text(X(s.nodes) + 8, Y(s.k) - 8, small ? s.label.split(",")[0] : s.label, { class: "small" });
+  }
+  g += text(left, bottom + 40, "Junctions in the network (log scale)", { class: "axis" });
+  g += text(0, top - 8, "Updates per day per million requests (log scale)", { class: "axis" });
+  mount("k-chart", W, bottom + 52, g);
+}
+
+// Exhibit 12: partial / full customization cost against changed-arc fraction, one line per size.
+function partialChart() {
+  const small = narrow(), W = small ? 400 : 960, left = small ? 52 : 70, right = W - (small ? 20 : 150), top = 24, bottom = small ? 300 : 380;
+  const X = (f) => left + (Math.log10(f) + 3.3) / 3.3 * (right - left);
+  const Y = (r) => bottom - (Math.log10(r) + 1) / 2 * (bottom - top);
+  let g = "";
+  for (const r of [0.1, 0.3, 1, 3, 10]) {
+    g += el("line", { x1: left, x2: right, y1: Y(r), y2: Y(r), class: r === 1 ? "ref" : "grid" });
+    g += text(left - 8, Y(r) + 4, `${num(r, r < 1 ? 1 : 0)}×`, { class: "tick", "text-anchor": "end" });
+  }
+  for (const f of [0.001, 0.01, 0.1, 1]) {
+    g += el("line", { x1: X(f), x2: X(f), y1: top, y2: bottom, class: "grid" });
+    g += text(X(f), bottom + 18, fpct(f), { class: "tick", "text-anchor": "middle" });
+  }
+  const pts = (ps) => ps.map((p) => p.join(",")).join(" ");
+  for (const s of sizes) {
+    const line = [...s.ratio.map((r) => [X(r.f), Y(r.mean)]), [X((s.dataset.f_min + s.dataset.f_max) / 2), Y(s.dataset.ratio_mean)]];
+    g += el("polyline", { points: pts(line), class: "cityline" }, title(`${s.label}: partial = full at f = ${s.f_star === null ? "never" : fpct(s.f_star)}`));
+  }
+  const fs = sizes[0].ratio.map((r) => r.f);
+  const med = fs.map((f) => [X(f), Y(median(sizes.map((s) => s.ratio.find((r) => r.f === f).mean)))]);
+  const data = [X(median(sizes.map((s) => (s.dataset.f_min + s.dataset.f_max) / 2))), Y(median(sizes.map((s) => s.dataset.ratio_mean)))];
+  g += el("polyline", { points: pts([...med, data]), class: "boundary" });
+  for (const [x, y] of med) g += el("circle", { cx: x, cy: y, r: 4, class: "dot" });
+  g += el("circle", { cx: data[0], cy: data[1], r: 6, class: "dot warn" }, title("Measured slot transitions"));
+  g += text(right + 6, Y(1) + 4, small ? "= full" : "= full update", { class: "small" });
+  g += text(data[0] - 6, data[1] - 12, small ? "slots" : "dataset slots", { class: "small", "text-anchor": "end" });
+  g += text(left, bottom + 40, "Share of arcs whose travel time changed (log scale)", { class: "axis" });
+  g += text(0, top - 8, "Partial update cost ÷ full customization (log scale)", { class: "axis" });
+  mount("partial-chart", W, bottom + 52, g);
+}
+
 function draw() {
   costChart(); cutChart(); orderChart(); mazeChart();
   if (T) { frontierChart(); updateChart(); regretChart(); changeChart(); }
+  if (SC) { kChart(); partialChart(); }
 }
 
 facts();

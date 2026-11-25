@@ -9,6 +9,7 @@ retained measurements in results/. Normalizations:
     carryover share (fixed-order median - pre-cleared median) / fixed-order median
     daily cost      core-hours per day at R requests and K updates: R q / 1e9 + K u / 3600
     regret          cost on the actual slot of the route chosen on stale times / optimum - 1
+    partial ratio   core-seconds of a partial CCH update / a full one on the same update, = 1.00
 """
 
 import argparse
@@ -19,6 +20,7 @@ import re
 import statistics
 from pathlib import Path
 
+import scale
 import traffic
 from metro import BOUNDS, CITIES, load_cities, validate_report_set
 
@@ -272,10 +274,11 @@ def build_payload(results_dir=ROOT / "results"):
         raise ValueError("salsa.jsonl no longer reports 30 fully certified sets")
     big = [r for r in salsa if r["set"].endswith("_1600")]
 
-    tpath = results_dir / "traffic.jsonl"
+    tpath, spath = results_dir / "traffic.jsonl", results_dir / "scale.jsonl"
     return {
         "schema": 3,
         "traffic": traffic_payload(tpath) if tpath.exists() else None,
+        "scale": scale_payload(spath) if spath.exists() else None,
         "provenance": {"metro_sha256": sha, "producer_sha": producer, "queries": queries,
                        "repeats": repeats, "threads": threads, "seed": seed},
         "engines": [{"id": k, "label": v} for k, v in ENGINES],
@@ -334,6 +337,46 @@ def traffic_payload(path):
     return {"sha256": hashlib.sha256(raw).hexdigest(), "k_max": K_MAX,
             "engines": [{"id": e, "label": TRAFFIC_LABELS[e]} for e in traffic.ENGINES],
             "slots": list(traffic.METRICS), "observed": sorted(traffic.OBSERVED), "regions": out}
+
+
+def scale_payload(path):
+    """Normalized size-study evidence: per size its nodes, K* with its pass range, the cheapest
+    engine and switches at 10⁶ requests, q and u of each engine, and the partial-update ratios
+    u(f)/u_full; the fitted growth exponents. K* and f* are recomputed and must match the rows."""
+    raw = path.read_bytes()
+    rows = [json.loads(line) for line in raw.decode("utf-8").splitlines() if line]
+    sizes = [r for r in rows if r["kind"] == "source"]
+    if [s["size"] for s in sizes] != [s for s in scale.SIZES if any(x["size"] == s for x in sizes)] or not sizes:
+        raise ValueError("scale.jsonl sizes out of order or missing")
+    out = []
+    for s in sizes:
+        eng = {r["method"]: r for r in rows if r["kind"] == "engine" and r["size"] == s["size"]}
+        b = next(r for r in rows if r["kind"] == "breakeven" and r["size"] == s["size"] and r["requests"] == 10**6)
+        first, switches, k = scale.kstar(eng)
+        if first != b["cheapest_static"] or k != b["k_cch"] or [e for _, e in switches] != [x["to"] for x in b["switches"]]:
+            raise ValueError(f"{s['size']}: break-even rows do not recompute")
+        ups = [r for r in rows if r["kind"] == "update" and r["size"] == s["size"]]
+        part = next(r for r in rows if r["kind"] == "partial" and r["size"] == s["size"])
+        syn = {f: [u["ratio"] for u in ups if u["target_f"] == f] for f in scale.F}
+        if part["f_star"] != scale.crossing(*scale.curve(ups)):
+            raise ValueError(f"{s['size']}: f* does not recompute")
+        data = [u for u in ups if u["sequence"] != "synthetic" and u["changed"]]
+        rk = next((r for r in rows if r["kind"] == "routingkit" and r["size"] == s["size"]), None)
+        out.append({
+            "id": s["size"], "label": s["label"], "nodes": s["nodes"], "queries": s["queries"],
+            "trees": s["certified_trees"], "k": b["k_cch"], "k_range": [min(b["k_cch_pass"]), max(b["k_cch_pass"])],
+            "static": first, "switches": b["switches"],
+            "engines": {e: {"q": v["q"], "u": v["u"], "u_wall": v["u_wall"], "prepare_s": v["prepare_s"],
+                            "memory_bytes": v["memory_bytes"]} for e, v in eng.items()},
+            "f_star": part["f_star"], "f_star_range": [min(x for x in part["f_star_pass"] if x is not None),
+                                                       max(x for x in part["f_star_pass"] if x is not None)],
+            "ratio": [{"f": f, "mean": statistics.fmean(v), "min": min(v), "max": max(v)} for f, v in syn.items()],
+            "dataset": {"f_min": min(u["f"] for u in data), "f_max": max(u["f"] for u in data),
+                        "ratio_mean": statistics.fmean(u["ratio"] for u in data)},
+            "routingkit": rk and {k: rk[k] for k in ("customize_s", "customize4_wall_s", "q", "prepare_s", "ratio_by_f")},
+        })
+    growth = {r["method"]: r for r in rows if r["kind"] == "growth"}
+    return {"sha256": hashlib.sha256(raw).hexdigest(), "sizes": out, "growth": growth}
 
 
 def javascript(payload):
