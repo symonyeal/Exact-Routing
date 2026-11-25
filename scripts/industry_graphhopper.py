@@ -13,40 +13,60 @@ import subprocess
 import sys
 from pathlib import Path
 
+import industry
+
 ROOT = Path(__file__).resolve().parents[1]
 COMMIT = "69e50f6e2cfaf0a8e69752df9953ee5f1ac276a4"
 
 
-def run(input_path, pbf, output, passes, slots, java="java"):
+def prepare(input_path, work):
+    """Export the PBF; all timed preparation is repeated inside each metric import."""
+    industry.export(input_path, work)
+    return []
+
+
+def slot(input_path, work, pass_index, metric, pbf=None, java="java"):
+    """Return one native metric row after a fresh import; remove the disposable native cache."""
     jar = ROOT / "external/graphhopper/target/graphhopper-benchmark-1.jar"
+    work.mkdir(parents=True, exist_ok=True)
+    cache = work / "graphhopper-cache"
+    rss = work / "graphhopper-rss.txt"
+    if cache.exists():
+        raise ValueError(f"GraphHopper cache already exists: {cache}")
+    pbf = pbf or work / "graph.osm.pbf"
+    command = [java, "-Xmx10g", "-Dorg.slf4j.simpleLogger.defaultLogLevel=warn",
+               "-jar", str(jar), str(input_path), str(pbf), str(cache), str(pass_index), str(metric)]
+    if sys.platform == "linux":
+        command = ["/usr/bin/time", "-f", "%M", "-o", str(rss), *command]
+    try:
+        result = subprocess.run(command, check=True, text=True, stdout=subprocess.PIPE)
+        rows = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
+        if len(rows) != 1 or rows[0].get("commit") != COMMIT:
+            raise ValueError("GraphHopper did not produce one pinned metric row")
+        row = rows[0]
+        if rss.exists():
+            row["memory_bytes"] = row["update_memory_bytes"] = int(rss.read_text().strip()) * 1024
+        row.update(memory_scope="whole JVM process including original input and certificates",
+                   tag="11.0", licence="Apache-2.0")
+        return row
+    finally:
+        if cache.exists():
+            shutil.rmtree(cache)
+        rss.unlink(missing_ok=True)
+
+
+def run(input_path, pbf, output, passes, slots, java="java"):
     partial = output.with_suffix(output.suffix + ".partial")
     output.parent.mkdir(parents=True, exist_ok=True)
-    cache = output.parent / (output.stem + "-graphhopper-cache")
-    rss = output.parent / (output.stem + "-graphhopper-rss.txt")
+    g = industry.read_input(input_path)
     with partial.open("w", encoding="utf-8", newline="\n") as out:
         for p in passes:
-            for slot in slots:
-                if cache.exists():
-                    raise ValueError(f"GraphHopper cache already exists: {cache}")
-                command = [java, "-Xmx10g", "-Dorg.slf4j.simpleLogger.defaultLogLevel=warn",
-                           "-jar", str(jar), str(input_path), str(pbf), str(cache), str(p), str(slot)]
-                if sys.platform == "linux":
-                    command = ["/usr/bin/time", "-f", "%M", "-o", str(rss), *command]
-                try:
-                    result = subprocess.run(command, check=True, text=True, stdout=subprocess.PIPE)
-                    rows = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
-                    if len(rows) != 1 or rows[0].get("commit") != COMMIT:
-                        raise ValueError("GraphHopper did not produce one pinned metric row")
-                    row = rows[0]
-                    if rss.exists():
-                        row["memory_peak_rss_bytes"] = int(rss.read_text().strip()) * 1024
-                    row["memory_scope"] = "whole JVM process including original input and certificates"
-                    out.write(json.dumps(row, separators=(",", ":"), allow_nan=False) + "\n")
-                    out.flush()
-                finally:
-                    if cache.exists():
-                        shutil.rmtree(cache)
-                    rss.unlink(missing_ok=True)
+            for metric, _ in industry.schedule(len(g["pairs"]) // 2, p):
+                if metric not in slots:
+                    continue
+                row = slot(input_path, output.parent, p, metric, pbf, java)
+                out.write(json.dumps(row, separators=(",", ":"), allow_nan=False) + "\n")
+                out.flush()
     partial.replace(output)
 
 

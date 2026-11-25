@@ -23,11 +23,14 @@ location index; `prepare_s` is zero because the importer is rebuilt for every me
 Timing includes per-request algorithm allocation and path extraction; re-pricing is outside it.
 There is no coordinate snapping, HTTP request, turn penalty, or distance preference.
 
-Rows retain every reachable answer's integer excess milliseconds after re-pricing its original
-directed arcs. Exact optimality shares use all reachable requests, including identical endpoints;
+Rows retain all original references and re-priced path costs as `reference_ms` and `price_ms`,
+with null for unreachable requests. Exact optimality shares use all reachable requests, including identical endpoints;
 unreachable requests remain in query timing and are checked for matching reachability. These are
-re-priced answers, not certified GraphHopper answers. `memory_peak_rss_bytes` is the entire JVM
+re-priced answers, not certified GraphHopper answers. `memory_bytes` is the entire JVM
 process peak, including the retained original input and certificates, and is not an index-only size.
+The timed query subset and order match `scale`'s pass/slot schedule; every remaining request is
+checked afterwards without including it in query timing. Original isolated nodes have no native
+OSM edge: their identity requests return a zero-length path and other requests return unreachable.
 For conversion fixtures of at most 64 arcs, `imported_units` retains one row per arc:
 `[arc, original_tail, original_head, original_ms, stored_distance_m, stored_speed_kmh, native_ms]`.
 The stored speed and rounded travel time are read from the imported native edge.

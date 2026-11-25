@@ -180,12 +180,50 @@ public final class Road {
         return selected;
     }
 
+    static String json(long[] values) {
+        StringBuilder out = new StringBuilder("[");
+        for (int i = 0; i < values.length; i++) {
+            if (i > 0) out.append(',');
+            if (values[i] < 0) out.append("null"); else out.append(values[i]);
+        }
+        return out.append(']').toString();
+    }
+
+    record Answer(long price, double seconds, long nodes) {}
+
+    static Answer answer(Input input, Hopper hopper, int[] nodes, CHRoutingAlgorithmFactory factory, int slot, int i) {
+        int s = input.pairs[2 * i], t = input.pairs[2 * i + 1];
+        long start = System.nanoTime();
+        List<EdgeIteratorState> edges = List.of();
+        boolean found = s == t;
+        if (nodes[s] >= 0 && nodes[t] >= 0) {
+            Path path = factory.createAlgo(new PMap()).calcPath(nodes[s], nodes[t]);
+            found = path.isFound();
+            edges = path.calcEdges();
+        }
+        double elapsed = seconds(start);
+        long reference = Integer.toUnsignedLong(input.reference[slot][i]);
+        if (found != (reference != INF)) throw new IllegalStateException("Reachability changed for query " + i);
+        if (!found) return new Answer(-1, elapsed, 0);
+        long cost = 0;
+        int at = s;
+        for (EdgeIteratorState edge : edges) {
+            int arc = hopper.edgeArc[edge.getEdge()];
+            if (arc < 0 || input.tail[arc] != at)
+                throw new IllegalStateException("Path traverses an illegal original arc");
+            at = input.head[arc];
+            cost += Integer.toUnsignedLong(input.weights[slot][arc]);
+        }
+        if (at != t || cost < reference) throw new IllegalStateException("Invalid re-priced path " + i);
+        return new Answer(cost, elapsed, edges.size() + 1L);
+    }
+
     public static void main(String[] args) throws Exception {
         if (args.length != 5) throw new IllegalArgumentException("Road INPUT PBF FRESH_CACHE PASS SLOT");
         Input input = new Input(args[0]);
         int pass = Integer.parseInt(args[3]), slot = Integer.parseInt(args[4]);
         Hopper hopper = new Hopper(input, slot);
-        CustomModel model = new CustomModel().setDistanceInfluence(0)
+        CustomModel model = new CustomModel().setDistanceInfluence(0d)
                 .addToSpeed(Statement.If("true", Statement.Op.LIMIT, "car_average_speed"))
                 .addToPriority(Statement.If("!car_access", Statement.Op.MULTIPLY, "0"));
         GraphHopperConfig config = new GraphHopperConfig()
@@ -214,54 +252,36 @@ public final class Road {
         int next = selected.length;
         for (int i = 0; i < input.q; i++) if (!timed[i]) order[next++] = i;
         long[] excess = new long[selected.length];
-        int reachable = 0, optimal = 0, same = 0, unreachable = 0;
+        long[] references = new long[input.q], prices = new long[input.q];
+        Arrays.fill(prices, -1);
+        int reachable = 0, checkedReachable = 0, checkedOptimal = 0, identity = 0;
         long pathNodes = 0;
         double query = 0;
         for (int i : order) {
-            int s = input.pairs[2 * i], t = input.pairs[2 * i + 1];
             long reference = Integer.toUnsignedLong(input.reference[slot][i]);
-            start = System.nanoTime();
-            Path path = null;
-            List<EdgeIteratorState> edges = List.of();
-            boolean found = s == t;
-            if (s != t && nodes[s] >= 0 && nodes[t] >= 0) {
-                path = factory.createAlgo(new PMap()).calcPath(nodes[s], nodes[t]);
-                found = path.isFound();
-                edges = path.calcEdges();
-            }
-            pathNodes += found ? edges.size() + 1L : 0;
-            double elapsed = seconds(start);
-            if (timed[i]) query += elapsed;
-            if (found != (reference != INF))
-                throw new IllegalStateException("Reachability changed for query " + i);
-            if (!found) { if (timed[i]) unreachable++; continue; }
-            if (s == t && timed[i]) same++;
-            long cost = 0;
-            int at = s;
-            for (EdgeIteratorState edge : edges) {
-                int arc = hopper.edgeArc[edge.getEdge()];
-                if (arc < 0 || input.tail[arc] != at)
-                    throw new IllegalStateException("Path traverses an illegal original arc");
-                at = input.head[arc];
-                cost += Integer.toUnsignedLong(input.weights[slot][arc]);
-            }
-            if (at != t || cost < reference) throw new IllegalStateException("Invalid re-priced path " + i);
-            if (timed[i]) {
-                excess[reachable++] = cost - reference;
-                if (cost == reference) optimal++;
-            }
+            references[i] = reference == INF ? -1 : reference;
+            Answer answer = answer(input, hopper, nodes, factory, slot, i);
+            pathNodes += answer.nodes();
+            if (timed[i]) query += answer.seconds();
+            if (answer.price() < 0) continue;
+            if (input.pairs[2 * i] == input.pairs[2 * i + 1]) identity++;
+            prices[i] = answer.price();
+            checkedReachable++;
+            if (answer.price() == reference) checkedOptimal++;
+            if (timed[i]) excess[reachable++] = answer.price() - reference;
         }
         excess = Arrays.copyOf(excess, reachable);
         System.out.printf(java.util.Locale.ROOT,
-                "{\"kind\":\"industry_slot\",\"engine\":\"graphhopper-ch\",\"release\":\"11.0\",\"commit\":\"%s\","
-                + "\"pass\":%d,\"slot\":%d,\"queries\":%d,\"reachable\":%d,\"unreachable\":%d,\"same\":%d,"
+                "{\"kind\":\"industry_query\",\"method\":\"graphhopper-ch\",\"release\":\"11.0\",\"commit\":\"%s\","
+                + "\"pass\":%d,\"slot\":%d,\"queries\":%d,\"timed_queries\":%d,\"reachable\":%d,\"identity\":%d,"
                 + "\"query_s\":%.12g,\"update_s\":%.12g,\"prepare_s\":0,\"threads\":1,"
-                + "\"optimal\":%d,\"excess_ms\":%s,\"clamped_arcs\":%d,\"speed_step_kmh\":2,"
+                + "\"optimal_count\":%d,\"excess_ms\":%s,\"clamped_arcs\":%d,\"speed_step_kmh\":2,"
                 + "\"path_nodes\":%d,\"arcs\":%d,\"imported_arcs\":%d,\"checked\":%d,"
-                + "\"imported_units\":%s,\"wrong\":0}%n",
-                COMMIT, pass, slot, selected.length, reachable, unreachable, same, query, update,
-                optimal, Arrays.toString(excess), hopper.clamped, pathNodes, input.m, hopper.getBaseGraph().getEdges(), input.q,
-                hopper.importedUnits());
+                + "\"imported_units\":%s,\"reference_ms\":%s,\"price_ms\":%s,"
+                + "\"answer_status\":\"re-priced, not certified\",\"wrong\":0}%n",
+                COMMIT, pass, slot, input.q, selected.length, checkedReachable, identity, query, update,
+                checkedOptimal, Arrays.toString(excess), hopper.clamped, pathNodes, input.m, hopper.getBaseGraph().getEdges(), input.q,
+                hopper.importedUnits(), json(references), json(prices));
         hopper.close();
     }
 }

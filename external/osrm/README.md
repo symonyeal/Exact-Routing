@@ -5,7 +5,7 @@ commit `4f3ee609ec1af40eb1f445c6706cfa5beb04c990`,
 [BSD-2-Clause](https://github.com/Project-OSRM/osrm-backend/blob/4f3ee609ec1af40eb1f445c6706cfa5beb04c990/LICENSE.TXT).
 No container image is used.
 
-Build on the same Ubuntu runner as the Rust benchmark. Dependencies are CMake,
+Build on the same Ubuntu 22.04 runner as the paired Rust benchmark. Dependencies are CMake,
 Boost date-time/chrono/filesystem/iostreams/program-options/regex/system/thread/test,
 TBB, Expat, BZip2, Lua 5.4 and zlib development packages.
 
