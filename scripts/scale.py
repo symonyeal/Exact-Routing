@@ -343,7 +343,7 @@ def routingkit(rows):
                             for f in F}}]
 
 
-def plan(selected="all"):
+def plan(selected="all", modes=None):
     """CI shards as {name, size, modes, passes, slots, queries}. A city or Gyeongbuk runs in one job;
     the union splits its timing by pass, the nation by pass and half of the weekday slots, each
     with the partial study, RoutingKit and memory in separate jobs."""
@@ -364,6 +364,13 @@ def plan(selected="all"):
                  "slots": slots, "queries": q},
                 {"name": f"{size}-memory", "size": size, "modes": "memory", "passes": every, "slots": slots,
                  "queries": q}]
+    if modes:
+        wanted = set(modes.split(","))
+        known = {"time", "partial", "routingkit", "routingkit-ch", "memory"}
+        if not wanted <= known:
+            raise ValueError(f"unknown modes: {sorted(wanted - known)}")
+        out = [{**x, "modes": ",".join(m for m in x["modes"].split(",") if m in wanted)} for x in out]
+        out = [x for x in out if x["modes"]]
     return out
 
 
@@ -525,13 +532,14 @@ def main():
     s.add_argument("--results", type=Path, default=REPO / "results")
     m = sub.add_parser("plan")
     m.add_argument("selected", choices=("all",) + SIZES)
+    m.add_argument("--modes", help="run only these comma-separated modes; merge other rows via previous_run")
     a = p.parse_args()
     if a.command == "fetch":
         fetch(a.size)
     elif a.command == "run":
         run(a.size, a.mode, a.output, a)
     elif a.command == "plan":
-        print(json.dumps({"include": plan(a.selected)}))
+        print(json.dumps({"include": plan(a.selected, a.modes)}))
     else:
         report(a.directory, a.results)
 

@@ -10,6 +10,9 @@ on:
       previous_run:
         description: Prior run whose completed shard artifacts should be reused
         required: false
+      modes:
+        description: Comma-separated modes to run (empty runs every mode)
+        required: false
 
 permissions:
   contents: read
@@ -20,7 +23,7 @@ defaults:
     shell: bash
 
 concurrency:
-  group: scale-${{ github.ref }}-${{ inputs.size || 'all' }}
+  group: scale-${{ github.ref }}-${{ inputs.size || 'all' }}-${{ inputs.modes || 'all' }}-${{ inputs.previous_run }}
   cancel-in-progress: true
 
 env:
@@ -49,7 +52,8 @@ jobs:
         id: plan
         env:
           SELECTED: ${{ inputs.size || 'all' }}
-        run: echo "matrix=$(python scripts/scale.py plan "$SELECTED")" >> "$GITHUB_OUTPUT"
+          MODES: ${{ inputs.modes }}
+        run: echo "matrix=$(python scripts/scale.py plan "$SELECTED" --modes "$MODES")" >> "$GITHUB_OUTPUT"
 
   shard:
     needs: checks

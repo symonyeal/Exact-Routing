@@ -97,6 +97,15 @@ class Validation(unittest.TestCase):
             modes = {m for x in scale.plan(size) for m in x["modes"].split(",")}
             self.assertEqual(modes, {"time", "partial", "routingkit", "routingkit-ch", "memory"}, size)
 
+    def test_ch_resume_runs_only_missing_ch_and_preserves_the_workload(self):
+        shards = scale.plan("all", "routingkit-ch")
+        self.assertEqual([x["size"] for x in shards], list(scale.SIZES))
+        self.assertTrue(all(x["modes"] == "routingkit-ch" for x in shards))
+        self.assertTrue(all(x["passes"] == "0,1,2" for x in shards))
+        self.assertEqual(shards[-1]["queries"], "200")
+        with self.assertRaises(ValueError):
+            scale.plan("all", "missing")
+
 
 class Union(unittest.TestCase):
     def test_induce_keeps_matched_nodes_and_edges_between_them(self):
