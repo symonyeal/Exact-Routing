@@ -18,7 +18,7 @@ The external engines are RoutingKit CH and CCH, pinned at [`54d49bb0cdea56dde182
 
 Sizes are eight Korean cities, Gyeongbuk province, a five-region union and South Korea. The union keeps nationwide nodes at coordinates present in Seoul, Incheon, Gyeonggi, Gangwon or Chungbuk, and nationwide arcs between those nodes. Every size uses three passes and eight weekday metrics. Cities, province and union use 1,000 pairs; the nation uses 200. Half are uniform random endpoints and half short random walks. Identical endpoints and unreachable requests remain in costs; per-size rows carry reachable counts.
 
-Travel times are `max(1, round(1000 × seconds))` milliseconds. A feasible shortest-path tree certifies each reference distance. Rust paths are re-priced outside timing. Bidirectional update cost includes rebuilding the reverse graph. Overlay paths are recovered by searches inside shortcut cells, included in request time. Memory runs prepare one engine in a fresh process; Rust reports peak resident memory above its loaded-input baseline, while RoutingKit records whole-process peak memory. Those scopes differ.
+Travel times are `max(1, round(1000 × seconds))` milliseconds. A feasible shortest-path tree certifies each reference distance. Rust paths are re-priced outside timing. Bidirectional update cost includes rebuilding the reverse graph. Overlay paths are recovered by searches inside shortcut cells, included in request time. Memory runs prepare one engine in a fresh process. Rust reports peak resident memory above its loaded-input baseline. RoutingKit reports the maximum child-process peak, including input and references; CH also includes the exporter when it must generate its input. These memory scopes differ.
 
 ## Results and limits
 
@@ -30,7 +30,7 @@ OSRM CH/MLD and GraphHopper are excluded after two failed integration attempts e
 
 ## Stale traffic
 
-The retained [eight-city traffic study](results/traffic.md) re-prices the route chosen on stale weights on the current metric. Mean extra travel time is 3.6–7.5% with the dataset's static road-class speed table, 0.2–0.8% between informative consecutive slots and 0.5–2.0% between observed slots. These are historical measurements, separate from the refreshed engine ranking. Nationwide retry [45690498142](https://github.com/symonyeal/Exact-Routing/actions/runs/45690498142) finished; its artifact still needs integration.
+The retained [traffic study](results/traffic.md) re-prices the route chosen on stale weights on the current metric. Across eight cities, mean extra travel time is 3.6–7.5% with the dataset's static road-class speed table, 0.2–0.8% between informative consecutive slots and 0.5–2.0% between observed slots. The integrated nationwide retry [45690498142](https://github.com/symonyeal/Exact-Routing/actions/runs/45690498142) is a separate pilot with one timing pass and 100 requests; the cities have three passes and 1,000 requests each. These historical measurements do not establish the refreshed engine ranking.
 
 `default_speed_kmh` is a road-class table, not measured free flow. Four weekday slots are observed; four are derived, including afternoon equal to midday. Slot order follows the dataset and includes the overnight wrap. These request pairs do not represent observed travel demand.
 

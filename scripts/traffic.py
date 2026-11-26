@@ -109,30 +109,6 @@ def validate(rows):
         raise ValueError("missing preparation rows")
 
 
-def engines(rows):
-    """q, u and their per-pass values for each engine of one region."""
-    g = rows[0]
-    out = {}
-    prep = {r["method"]: r for r in rows if r["kind"] == "prepare"}
-    for e in ENGINES:
-        slot = [r for r in rows if r["kind"] == "slot" and r["method"] == e]
-        passes = range(g["repeats"])
-        q_pass = [sum(r["query_s"] for r in slot if r["pass"] == p)
-                  / sum(r["queries"] for r in slot if r["pass"] == p) * 1e9 / 3600 for p in passes]
-        u_pass = [float(np.mean([r["update_s"] for r in slot if r["pass"] == p])) for p in passes]
-        u_slot = [float(np.median([r["update_s"] for r in slot if r["slot"] == s])) for s in range(len(SLOTS))]
-        out[e] = {
-            "q": sum(r["query_s"] for r in slot) / sum(r["queries"] for r in slot) * 1e9 / 3600,
-            "q_pass": q_pass,
-            "u": float(np.mean(u_slot)),
-            "u_slot": u_slot,
-            "u_pass": u_pass,
-            "prepare_s": prep[e]["seconds"] if e in prep else 0.0,
-            "checked": sum(r["checked"] for r in slot),
-        }
-    return out
-
-
 def envelope(lines):
     """Lower envelope over K >= 0 of lines C_e(K) = a_e + b_e K: the cheapest engine at K = 0 and
     each (K*, engine) where the cheapest changes. Ties at K = 0 go to the smaller slope."""
@@ -169,32 +145,28 @@ def overlaps(a, b):
 def regret(rows):
     """Regret and ETA error over reachable pairs with distinct endpoints. `series`: free (free flow ->
     each slot), consecutive (each slot -> the next, night wrapping to am_peak) or observed (each
-    observed slot -> the next observed one, skipping the derived slots); `group` all or uniform (the
-    uniform-pair half of the workload)."""
+    observed slot -> the next observed one, skipping the derived slots)."""
     g = rows[0]
     k = len(METRICS)
     idx = [i for i, ((s, t), c) in enumerate(zip(g["pairs"], g["costs"])) if c is not None and s != t]
     c = np.array([g["costs"][i] for i in idx], float).reshape(-1, k, k)
-    uniform = np.array([i % 4 >= 2 for i in idx])
     seen = [METRICS.index(m) for m in METRICS if m in OBSERVED]
     moves = ([("free", 0, j) for j in range(1, k)] + [("consecutive", j, j % (k - 1) + 1) for j in range(1, k)]
              + [("observed", a, b) for a, b in zip(seen, seen[1:] + seen[:1])])
     out = []
     for series, tau, sigma in moves:
-        for group, keep in (("all", np.ones(len(idx), bool)), ("uniform", uniform)):
-            if not keep.any():
-                continue
-            x = c[keep]
-            opt = x[:, sigma, sigma]
-            r = x[:, tau, sigma] / opt - 1
-            eta = x[:, tau, tau] / opt - 1
-            out.append({
-                "series": series, "from": METRICS[tau], "to": METRICS[sigma], "group": group, "pairs": int(keep.sum()),
-                "mean": float(r.mean()), "p95": float(np.quantile(r, 0.95, method="inverted_cdf")),
-                "share_ge5": float((r >= 0.05).mean()), "share_changed": float((r > 0).mean()),
-                "eta_mean": float(eta.mean()), "eta_abs_mean": float(np.abs(eta).mean()),
-                "eta_abs_p95": float(np.quantile(np.abs(eta), 0.95, method="inverted_cdf")),
-            })
+        if not idx:
+            continue
+        opt = c[:, sigma, sigma]
+        r = c[:, tau, sigma] / opt - 1
+        eta = c[:, tau, tau] / opt - 1
+        out.append({
+            "series": series, "from": METRICS[tau], "to": METRICS[sigma], "group": "all", "pairs": len(idx),
+            "mean": float(r.mean()), "p95": float(np.quantile(r, 0.95, method="inverted_cdf")),
+            "share_ge5": float((r >= 0.05).mean()), "share_changed": float((r > 0).mean()),
+            "eta_mean": float(eta.mean()), "eta_abs_mean": float(np.abs(eta).mean()),
+            "eta_abs_p95": float(np.quantile(np.abs(eta), 0.95, method="inverted_cdf")),
+        })
     return out
 
 
@@ -213,19 +185,6 @@ def summarize(path):
         "cch_edges": prep["CCH"]["edges"], "cch_tree_height": prep["CCH"]["tree_height"],
         "raw_sha256": hashlib.sha256(raw).hexdigest(), "source": g["source"], "machine": g["machine"],
     }]
-    eng = engines(rows)
-    out += [{"kind": "engine", "region": region, "method": e, **v} for e, v in eng.items()]
-    for r in REQUESTS:
-        first, switches = breakeven(eng, r)
-        passes = [breakeven(eng, r, p) for p in range(g["repeats"])]
-        same = all(f == first and [e for _, e in sw] == [e for _, e in switches] for f, sw in passes)
-        out.append({
-            "kind": "breakeven", "region": region, "requests": r, "cheapest_static": first,
-            "static_ties": [e for e in ENGINES if e != first and overlaps(eng[e]["q_pass"], eng[first]["q_pass"])],
-            "passes_agree": same,
-            "switches": [{"k": k, "to": e, "k_pass": [sw[i][0] for _, sw in passes] if same else None}
-                         for i, (k, e) in enumerate(switches)],
-        })
     out += [{"kind": "regret", "region": region, **r} for r in regret(rows)]
     return out
 
@@ -243,32 +202,28 @@ def report(directory, results):
 
 def markdown(rows):
     regions = [r for r in REGIONS if any(x["region"] == r for x in rows)]
-    eng = {(r["region"], r["method"]): r for r in rows if r["kind"] == "engine"}
     src = {r["region"]: r for r in rows if r["kind"] == "source"}
     lines = ["# Traffic study", "", "Generated by `scripts/traffic.py report` from per-region raw files; "
-             "Korea Road Network ETA, CC BY-NC 4.0 (non-commercial). Integer-millisecond travel times.", "",
-             "## Engines", "",
-             "| Region | Nodes | Engine | q, core-h / 10⁹ (pass range) | u, s per update (pass range) | Prepare, s |",
-             "| --- | ---: | --- | ---: | ---: | ---: |"]
-    for g in regions:
-        for e in ENGINES:
-            v = eng[g, e]
-            lines.append(f"| {g} | {src[g]['nodes']:,} | {e} | {v['q']:.3g} ({min(v['q_pass']):.3g}–{max(v['q_pass']):.3g}) "
-                         f"| {v['u']:.3g} ({min(v['u_pass']):.3g}–{max(v['u_pass']):.3g}) | {v['prepare_s']:.3g} |")
-    lines += ["", "## Break-even updates per day", "",
-              "| Region | Requests / day | Cheapest without updates | Switches (K per day → engine) |", "| --- | ---: | --- | --- |"]
-    for r in (x for x in rows if x["kind"] == "breakeven"):
-        sw = "; ".join(f"{s['k']:.3g}" + (f" ({min(s['k_pass']):.3g}–{max(s['k_pass']):.3g})" if s["k_pass"] else "")
-                       + f" → {s['to']}" for s in r["switches"]) or "none"
-        ties = f" (not distinguishable from {', '.join(r['static_ties'])})" if r["static_ties"] else ""
-        lines.append(f"| {r['region']} | {r['requests']:,} | {r['cheapest_static']}{ties} | {sw} |")
-    lines += ["", "## Regret of routing on stale times (all reachable pairs)", "",
-              "| Region | Series | From → to | Pairs | Mean | p95 | ≥ 5% | Route changes | ETA error, mean abs |",
-              "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |"]
-    for r in (x for x in rows if x["kind"] == "regret" and x["group"] == "all"):
-        lines.append(f"| {r['region']} | {r['series']} | {r['from']} → {r['to']} | {r['pairs']} | {100 * r['mean']:.2f}% | "
-                     f"{100 * r['p95']:.2f}% | {100 * r['share_ge5']:.1f}% | {100 * r['share_changed']:.1f}% | "
-                     f"{100 * r['eta_abs_mean']:.1f}% |")
+               "Korea Road Network ETA, CC BY-NC 4.0 (non-commercial). Integer-millisecond travel times. "
+               "Stale-route travel-time regret; the engine cost comparison is separate. "
+               "Nationwide is a one-pass pilot with 100 requests.", "",
+               "| Region | Requests | Timing passes | Reachable | Identical endpoints |",
+               "| --- | ---: | ---: | ---: | ---: |",
+               *[f"| {g} | {src[g]['queries']} | {src[g]['repeats']} | {src[g]['reachable']} | "
+                 f"{src[g]['identical_endpoints']} |" for g in regions], "",
+             "Mean excess travel time over reachable pairs with distinct endpoints. Consecutive transitions "
+             "omit midday → afternoon (identical weights) and include night → morning. Observed transitions "
+             "use morning peak → midday → evening peak → off-peak → morning peak; other slots are derived.", "",
+             "| Region | Trips | Road-class free flow | Previous consecutive slot | Previous observed slot |",
+             "| --- | ---: | ---: | ---: | ---: |"]
+    for region in regions:
+        cells = []
+        for series in ("free", "consecutive", "observed"):
+            group = [r for r in rows if r["kind"] == "regret" and r["region"] == region
+                     and r["series"] == series and not (series == "consecutive"
+                                                       and r["from"] == "midday" and r["to"] == "afternoon")]
+            cells.append(f"{100 * np.mean([r['mean'] for r in group]):.2f}%")
+        lines.append(f"| {region} | {group[0]['pairs']} | {' | '.join(cells)} |")
     return "\n".join(lines) + "\n"
 
 

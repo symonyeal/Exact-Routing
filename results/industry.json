@@ -4,7 +4,10 @@
   "engines": [
     {
       "name": "OSRM",
-      "methods": ["osrm-ch", "osrm-mld"],
+      "methods": [
+        "osrm-ch",
+        "osrm-mld"
+      ],
       "status": "excluded",
       "release": "v5.27.1",
       "commit": "4f3ee609ec1af40eb1f445c6706cfa5beb04c990",
@@ -25,7 +28,7 @@
           "url": "https://github.com/symonyeal/Exact-Routing/actions/runs/45723904712",
           "producer": "b49c975a75b4e222de40ab840f9bcd0d68b93c2d",
           "stage": "native build",
-          "failure": "Native build step exited with code 2 on Ubuntu 22.04; conversion was skipped. Exact build error unavailable: run and job log endpoints return HTTP 403. No artifacts were uploaded."
+          "failure": "Native adapter build failed: source/include/storage/tar.hpp:14 could not find microtar.h while compiling osrm.cpp through extractor/files.hpp. The osrm-bench target exited with code 2; graph conversion did not run."
         }
       ],
       "accepted_measurements": 0,
@@ -34,7 +37,9 @@
     },
     {
       "name": "GraphHopper",
-      "methods": ["graphhopper-ch"],
+      "methods": [
+        "graphhopper-ch"
+      ],
       "status": "excluded",
       "release": "11.0",
       "commit": "69e50f6e2cfaf0a8e69752df9953ee5f1ac276a4",

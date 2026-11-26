@@ -3,6 +3,7 @@
 import json
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -85,24 +86,39 @@ class Regret(unittest.TestCase):
         with self.assertRaises(ValueError):
             traffic.validate([r for r in rows if not (r["kind"] == "slot" and r["slot"] == 3)])
 
+    def test_summarize_keeps_only_source_and_all_request_regret(self):
+        rows = raw([self.matrix(1.0)], [[0, 1]])
+        rows[0].update(nodes=2, arcs=1, reachable=1, identical_endpoints=0,
+                       reference_s=0.1, source={}, machine={})
+        data = "".join(json.dumps(r) + "\n" for r in rows).encode()
+        with patch.object(Path, "read_bytes", return_value=data):
+            out = traffic.summarize(Path("fixture.jsonl"))
+        self.assertEqual([r["kind"] for r in out], ["source"] + ["regret"] * 20)
+        self.assertEqual([r for r in out if r["kind"] == "regret"],
+                         [{"kind": "regret", "region": "sejong", **r} for r in traffic.regret(rows)])
+        self.assertTrue(all(r["group"] == "all" for r in out[1:]))
+        am_peak = next(r for r in out[1:] if r["from"] == "free" and r["to"] == "am_peak")
+        self.assertAlmostEqual(am_peak["mean"], 0.1)
+
 
 @unittest.skipUnless(RESULTS.exists(), "no committed traffic results")
 class Committed(unittest.TestCase):
     def setUp(self):
         self.rows = [json.loads(line) for line in RESULTS.read_text(encoding="utf-8").splitlines()]
 
-    def test_breakeven_rows_recompute_from_engine_rows(self):
+    def test_nine_regions_have_only_sources_and_all_request_regret(self):
         regions = {r["region"] for r in self.rows if r["kind"] == "source"}
-        self.assertTrue(regions)
+        self.assertEqual(regions, set(traffic.REGIONS))
+        self.assertEqual({r["kind"] for r in self.rows}, {"source", "regret"})
         for region in regions:
-            eng = {r["method"]: r for r in self.rows if r["kind"] == "engine" and r["region"] == region}
-            self.assertEqual(set(eng), set(traffic.ENGINES))
-            for b in (r for r in self.rows if r["kind"] == "breakeven" and r["region"] == region):
-                first, switches = traffic.breakeven(eng, b["requests"])
-                self.assertEqual(first, b["cheapest_static"])
-                self.assertEqual([e for _, e in switches], [s["to"] for s in b["switches"]])
-                for (k, _), s in zip(switches, b["switches"]):
-                    self.assertAlmostEqual(k, s["k"], delta=1e-9 * max(1.0, k))
+            source = [r for r in self.rows if r["kind"] == "source" and r["region"] == region]
+            self.assertEqual(len(source), 1)
+            self.assertEqual(source[0]["repeats"], 1 if region == "korea" else 3)
+            self.assertEqual(source[0]["queries"], 100 if region == "korea" else 1000)
+            rows = [r for r in self.rows if r["kind"] == "regret" and r["region"] == region]
+            self.assertEqual(len({(r["series"], r["from"], r["to"]) for r in rows}), 20)
+            self.assertEqual(len(rows), 20)
+            self.assertTrue(all(r["group"] == "all" and r["pairs"] > 0 for r in rows))
 
     def test_regret_is_nonnegative_and_rows_carry_provenance(self):
         for r in self.rows:
@@ -111,6 +127,9 @@ class Committed(unittest.TestCase):
                 self.assertGreaterEqual(r["share_ge5"], 0.0)
                 self.assertLessEqual(r["share_ge5"], r["share_changed"])
             if r["kind"] == "source":
+                self.assertEqual(r["certified_trees"], r["queries"] * len(traffic.METRICS))
+                self.assertLessEqual(r["reachable"], r["queries"])
+                self.assertRegex(r["raw_sha256"], r"^[0-9a-f]{64}$")
                 src = r["source"]
                 self.assertEqual(src["licence"], "CC BY-NC 4.0")
                 for key in ("url", "revision", "nodes_sha256", "edges_sha256", "output_sha256", "metrics_sha256"):

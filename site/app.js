@@ -127,7 +127,7 @@ function render() {
     for (const id of ["q-chart", "u-chart", "partial-chart", "engine-tables"]) pending(id, "Comparison measurements pending.");
   }
   boundaries(); growth(); exclusions();
-  if (D.traffic) node("regret-table").innerHTML = table("Mean excess travel time across informative transitions, reachable distinct-endpoint pairs", ["Network", "Trips", "Road-class free flow", "Previous consecutive slot", "Previous observed slot"], D.traffic.regions.map((r) => [esc(r.label), n(r.series.free.pairs), pct(r.series.free.mean), pct(r.series.consecutive.mean), pct(r.series.observed.mean)]));
+  if (D.traffic) node("regret-table").innerHTML = table("Mean excess travel time across informative transitions; nationwide is a one-pass pilot, separate from the engine ranking", ["Network", "Requests", "Timing passes", "Reachable distinct trips", "Road-class free flow", "Previous consecutive slot", "Previous observed slot"], D.traffic.regions.map((r) => [esc(r.label), n(r.queries), n(r.timing_passes), n(r.series.free.pairs), pct(r.series.free.mean), pct(r.series.consecutive.mean), pct(r.series.observed.mean)]));
   else pending("regret-table", "Traffic regret not measured.");
 }
 

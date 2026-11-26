@@ -107,7 +107,8 @@ def traffic_payload(path):
             series[name] = {"mean": statistics.fmean(r["mean"] for r in group),
                             "pairs": group[0]["pairs"], "transitions": len(group)}
         regions.append({"id": src["region"], "label": "Nationwide" if src["region"] == "korea" else src["region"].title(),
-                        "series": series, "raw_sha256": src["raw_sha256"],
+                        "series": series, "timing_passes": src["repeats"], "queries": src["queries"],
+                        "raw_sha256": src["raw_sha256"],
                         "machine": src["machine"], "source": src["source"]})
     if not regions:
         raise ValueError("no traffic regions")

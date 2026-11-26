@@ -450,7 +450,7 @@ def growth(rows):
         return []
     eng = {(r["size"], r["method"]): r for r in rows if r["kind"] == "engine"}
     out = []
-    for e in ENGINES:
+    for e in dict.fromkeys(r["method"] for r in rows if r["kind"] == "engine"):
         v = [eng[s["size"], e] for s in sizes]
         row = {"kind": "growth", "method": e, "sizes": len(n)}
         for key, name in (("q", "a"), ("u", "b")):
@@ -500,17 +500,21 @@ def markdown(rows):
              "CC BY-NC 4.0 (non-commercial). Integer-millisecond travel times; q in core-hours per 10⁹ requests, "
              "u in core-seconds per update, ranges over three passes.", "",
              "## Engines by size", "",
-             "| Size | Nodes | Engine | q (pass range) | u (pass range) | u wall | Prepare, s | Memory, MB |",
-             "| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |"]
+             "Rust memory is incremental peak RSS above loaded input; native memory is the maximum child-process "
+             "RSS (CH includes the exporter when input must be generated). These scopes differ. "
+             "Every new-contract request returns a path; checked counts include repeated checks.", "",
+             "| Size | Nodes | Engine | q (pass range) | u (pass range) | u wall | Prepare, s | Memory, MB | Checked |",
+             "| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |"]
     for s in src:
-        for e in ENGINES:
+        for e in (r["method"] for r in rows if r["kind"] == "engine" and r["size"] == s["size"]):
             v = eng[s["size"], e]
-            mem = f"{v['memory_bytes'] / 1e6:.0f}" if v["memory_bytes"] is not None else "n/a"
+            peak = v["memory_bytes"] if v["memory_bytes"] is not None else v.get("process_peak_rss_bytes")
+            mem = f"{peak / 1e6:.0f}" if peak is not None else "not measured"
             lines.append(f"| {s['label']} | {s['nodes']:,} | {e} | {v['q']:.3g} ({min(v['q_pass']):.3g}–"
                          f"{max(v['q_pass']):.3g}) | {v['u']:.3g} ({min(v['u_pass']):.3g}–{max(v['u_pass']):.3g}) "
-                         f"| {v['u_wall']:.3g} | {v['prepare_s']:.3g} | {mem} |")
+                         f"| {v['u_wall']:.3g} | {v['prepare_s']:.3g} | {mem} | {v['checked']} |")
     lines += ["", "## Break-even at 10⁶ requests per day", "",
-              "| Size | Nodes | Cheapest without updates | K* (CCH cheapest above), pass range | Switches |",
+              "| Size | Nodes | Cheapest without updates | K* (entry into BASE CCH), pass range | All-engine switches |",
               "| --- | ---: | --- | ---: | --- |"]
     for r in (x for x in rows if x["kind"] == "breakeven" and x["requests"] == 10**6):
         s = next(x for x in src if x["size"] == r["size"])
@@ -538,12 +542,10 @@ def markdown(rows):
                      f"{100 * r['dataset_f'][0]:.3g}–{100 * r['dataset_f'][1]:.3g}% |")
     rk = [r for r in rows if r["kind"] == "routingkit"]
     if rk:
-        lines += ["", "## RoutingKit (C++)", "",
-                  "| Size | CCH prepare, s | CCH customize, s | 4 threads wall, s | CCH q | CH rebuild, s | CH q | Checked |",
-                  "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
+        lines += ["", "## RoutingKit four-thread customization", "",
+                  "| Size | Wall seconds per update |", "| --- | ---: |"]
         for r in rk:
-            lines.append(f"| {r['size']} | {r['prepare_s']:.3g} | {r['customize_s']:.3g} | {r['customize4_wall_s']:.3g} | "
-                         f"{r['q']:.3g} | {r['ch_build_s']:.3g} | {r['ch_q']:.3g} | {r['checked']} |")
+            lines.append(f"| {r['size']} | {r['customize4_wall_s']:.3g} |")
     return "\n".join(lines) + "\n"
 
 
