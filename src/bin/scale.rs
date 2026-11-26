@@ -207,9 +207,13 @@ fn answer(
     t: usize,
 ) -> f64 {
     match x {
-        Index::Plain if e == 0 => w.search.run(g, s, Some(t), |_| true),
-        Index::Plain => w.bi.query(g, r, s, t),
-        Index::Ch(ch, calc) => ch.query(calc, s, t),
+        Index::Plain if e == 0 => {
+            let d = w.search.run(g, s, Some(t), |_| true);
+            w.search.path(s, t, &mut w.path);
+            d
+        }
+        Index::Plain => w.bi.path(g, r, s, t, &mut w.path),
+        Index::Ch(ch, calc) => ch.path(calc, s, t, Some(&mut w.path)),
         Index::Cch(m) => {
             let ws = w.ws.as_mut().unwrap();
             p.cch
@@ -224,7 +228,9 @@ fn answer(
                 .unwrap()
                 .query_perfect(q, m, ws, s, t, Some(&mut w.path))
         }
-        Index::Multi(m) => w.multi.run(g, p.nests[e - 8].as_ref().unwrap(), m, s, t),
+        Index::Multi(m) => w
+            .multi
+            .path(g, p.nests[e - 8].as_ref().unwrap(), m, s, t, &mut w.path),
     }
 }
 
@@ -359,11 +365,6 @@ fn time(
     assert!(slots.iter().all(|&s| s < SLOTS) && threads > 0);
     let gs = load(road, cols, |j| j == 0 || slots.iter().any(|&s| s + 1 == j));
     let g = |j: usize| gs[j].as_ref().unwrap();
-    let rs: Vec<Option<Graph>> = gs
-        .iter()
-        .enumerate()
-        .map(|(j, x)| x.as_ref().filter(|_| j > 0).map(Graph::reverse))
-        .collect();
     let pairs = pairs(g(0), q);
     let t0 = Instant::now();
     let refs: Vec<Option<Vec<f64>>> = gs
@@ -415,7 +416,7 @@ fn time(
                 continue;
             }
             let j = slot + 1;
-            let (gj, rj, d) = (g(j), rs[j].as_ref().unwrap(), refs[j].as_ref().unwrap());
+            let (gj, d) = (g(j), refs[j].as_ref().unwrap());
             for e in (0..ENGINES.len()).map(|e| (e + pass + step) % ENGINES.len()) {
                 let mut changed = Vec::new();
                 if e == 6 {
@@ -426,8 +427,10 @@ fn time(
                 }
                 let from = carry.0;
                 let t0 = Instant::now();
+                let reverse = (e == 1).then(|| gj.reverse());
                 let (x, core, extra) = update(e, &p, gj, &mut carry.1, &changed);
                 let wall = t0.elapsed().as_secs_f64();
+                let rj = reverse.as_ref().unwrap_or(gj);
                 let mut x = black_box(x);
                 let t0 = Instant::now();
                 for &i in &mine {
@@ -436,13 +439,13 @@ fn time(
                     assert_eq!(got, d[i], "{} {s}->{t} slot {slot}", ENGINES[e]);
                 }
                 let seconds = t0.elapsed().as_secs_f64();
-                if e >= 2 {
-                    for i in (0..q).filter(|i| (i + pass) % SLOTS != slot) {
+                {
+                    // Replay outside timing to check every returned path, including the timed set.
+                    for i in (0..q).filter(|i| e >= 2 || (i + pass) % SLOTS == slot) {
                         let (s, t) = pairs[i];
                         let got = answer(e, &mut x, &p, &mut w, gj, rj, s, t);
                         assert_eq!(got, d[i], "{} {s}->{t} slot {slot}", ENGINES[e]);
-                        // The CCH engines return a path with each distance: re-price it.
-                        if (4..8).contains(&e) && got.is_finite() {
+                        if got.is_finite() {
                             let c = priced(gj, &w.path, s, t);
                             assert_eq!(c, got, "{} path {s}->{t}", ENGINES[e]);
                         }
@@ -451,7 +454,7 @@ fn time(
                 if let (6, Index::Cch(m)) = (e, x) {
                     carry = (j, Some(m));
                 }
-                let (u, uw) = if e < 2 {
+                let (u, uw) = if e == 0 {
                     (0.0, 0.0)
                 } else {
                     (core.unwrap_or(wall), wall)
@@ -463,7 +466,7 @@ fn time(
                 );
                 let mut r = json!({"kind":"slot", "method":ENGINES[e], "pass":pass, "slot":slot,
                     "update_s":u, "update_wall_s":uw, "queries":mine.len(), "query_s":seconds,
-                    "checked":if e < 2 {mine.len()} else {q}, "wrong":0});
+                    "checked":if e < 2 {mine.len()} else {q}, "wrong":0, "answer_kind":"path"});
                 if e == 6 {
                     r["from"] = json!(from);
                 }
@@ -664,7 +667,12 @@ fn write_routingkit(
     arcs.iter().for_each(|a| u32s(&mut b, a.0));
     arcs.iter().for_each(|a| u32s(&mut b, a.1));
     xy.iter().for_each(|p| b.extend((p.1 as f32).to_le_bytes()));
-    xy.iter().for_each(|p| b.extend((p.0 as f32).to_le_bytes()));
+    // The partition uses equirectangular x; OSM import needs geographic longitude.
+    let cos = (xy.iter().map(|p| p.1).sum::<f64>() / xy.len() as f64)
+        .to_radians()
+        .cos();
+    xy.iter()
+        .for_each(|p| b.extend(((p.0 / cos) as f32).to_le_bytes()));
     for gj in &gs[1..=SLOTS] {
         gj.weights().iter().for_each(|&w| u32s(&mut b, w as u32));
     }

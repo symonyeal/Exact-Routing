@@ -1,6 +1,6 @@
 //! Bidirectional distances against Bellman–Ford on raw directed arcs.
 
-use route::graph::Graph;
+use route::graph::{Graph, Search};
 use route::query::BiSearch;
 
 fn bellman(n: usize, arcs: &[(u32, u32, f64)], s: usize) -> Vec<f64> {
@@ -25,12 +25,38 @@ fn check(n: usize, arcs: Vec<(u32, u32, f64)>) {
     let g = Graph::new(n, arcs.iter().copied());
     let r = g.reverse();
     let mut search = BiSearch::new(n);
+    let mut plain = Search::new(n);
+    let mut path = Vec::new();
     for s in 0..n {
         let expected = bellman(n, &arcs, s);
         for (t, &want) in expected.iter().enumerate() {
             assert_eq!(search.query(&g, &r, s, t), want, "{s}->{t}, n={n}");
+            assert_eq!(search.path(&g, &r, s, t, &mut path), want);
+            price(&g, &path, s, t, want);
+            assert_eq!(plain.run(&g, s, Some(t), |_| true), want);
+            plain.path(s, t, &mut path);
+            price(&g, &path, s, t, want);
         }
     }
+}
+
+fn price(g: &Graph, path: &[u32], s: usize, t: usize, want: f64) {
+    if want.is_infinite() {
+        assert!(path.is_empty());
+        return;
+    }
+    assert_eq!(path.first(), Some(&(s as u32)));
+    assert_eq!(path.last(), Some(&(t as u32)));
+    let cost: f64 = path
+        .windows(2)
+        .map(|p| {
+            g.arcs(p[0] as usize)
+                .filter(|&(v, _)| v == p[1])
+                .map(|(_, w)| w)
+                .fold(f64::INFINITY, f64::min)
+        })
+        .sum();
+    assert_eq!(cost, want);
 }
 
 #[test]

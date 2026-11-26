@@ -195,6 +195,7 @@ pub fn check(g: &Graph, s: usize, t: &Tree) -> bool {
 /// touched entries are reset between runs.
 pub struct Search {
     pub d: Vec<f64>,
+    pi: Vec<u32>,
     done: Vec<bool>,
     touched: Vec<u32>,
     heap: BinaryHeap<Reverse<(Key, u32)>>,
@@ -204,6 +205,7 @@ impl Search {
     pub fn new(n: usize) -> Search {
         Search {
             d: vec![f64::INFINITY; n],
+            pi: vec![0; n],
             done: vec![false; n],
             touched: Vec::new(),
             heap: BinaryHeap::new(),
@@ -225,6 +227,7 @@ impl Search {
         self.heap.clear();
         self.heap.push(Reverse((Key(0.0), s as u32)));
         self.d[s] = 0.0;
+        self.pi[s] = s as u32;
         self.touched.push(s as u32);
         while let Some(Reverse((Key(dx), x))) = self.heap.pop() {
             let x = x as usize;
@@ -241,10 +244,25 @@ impl Search {
                         self.touched.push(y as u32);
                     }
                     self.d[y] = dx + w;
+                    self.pi[y] = x as u32;
                     self.heap.push(Reverse((Key(dx + w), y as u32)));
                 }
             }
         }
         t.map_or(0.0, |t| self.d[t])
+    }
+
+    /// Node path of the last run from s to t, empty when unreachable. `run` must have settled t.
+    pub fn path(&self, s: usize, t: usize, path: &mut Vec<u32>) {
+        path.clear();
+        if self.d[t].is_finite() {
+            let mut x = t;
+            path.push(x as u32);
+            while x != s {
+                x = self.pi[x] as usize;
+                path.push(x as u32);
+            }
+            path.reverse();
+        }
     }
 }

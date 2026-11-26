@@ -84,15 +84,38 @@ impl Ch {
 
     /// Return the exact distance; return infinity when no path exists.
     pub fn query(&self, calc: &mut fast_paths::PathCalculator, s: usize, t: usize) -> f64 {
+        self.path(calc, s, t, None)
+    }
+
+    /// Exact distance and optional unpacked node path, cleared for unreachable endpoints.
+    pub fn path(
+        &self,
+        calc: &mut fast_paths::PathCalculator,
+        s: usize,
+        t: usize,
+        out: Option<&mut Vec<u32>>,
+    ) -> f64 {
         assert!(s < self.n && t < self.n, "query node is outside the graph");
+        let mut out = out;
+        if let Some(out) = &mut out {
+            out.clear();
+        }
         if s == t {
+            if let Some(out) = out {
+                out.push(s as u32);
+            }
             return 0.0;
         }
         if s >= self.prepared_nodes || t >= self.prepared_nodes {
             return f64::INFINITY;
         }
         calc.calc_path(&self.graph, s, t)
-            .map_or(f64::INFINITY, |path| path.get_weight() as f64)
+            .map_or(f64::INFINITY, |path| {
+                if let Some(out) = out {
+                    out.extend(path.get_nodes().iter().map(|&v| v as u32));
+                }
+                path.get_weight() as f64
+            })
     }
 
     /// Number of forward and backward arcs in the prepared hierarchy.

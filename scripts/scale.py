@@ -235,9 +235,9 @@ def engines(rows):
         slot = [r for r in rows if r["kind"] == "slot" and r["method"] == e]
         pool = [r for r in rows if r["kind"] == "slot" and r["method"] in (SAME if e in SAME else (e,))]
         q_pass = [rate([r for r in pool if r["pass"] == p]) for p in range(PASSES)]
-        u_slot = [float(np.median([r["update_s"] for r in slot if r["slot"] == s])) for s in range(SLOT_COUNT)]
+        u_slot = [float(np.mean([r["update_s"] for r in slot if r["slot"] == s])) for s in range(SLOT_COUNT)]
         u_pass = [float(np.mean([r["update_s"] for r in slot if r["pass"] == p])) for p in range(PASSES)]
-        wall = [float(np.median([r["update_wall_s"] for r in slot if r["slot"] == s])) for s in range(SLOT_COUNT)]
+        wall = [float(np.mean([r["update_wall_s"] for r in slot if r["slot"] == s])) for s in range(SLOT_COUNT)]
         prep = [r["seconds"] for r in rows if r["kind"] == "prepare"
                 and r["method"] == ("CCH" if e.startswith("CCH") else e)]
         m = memory.get(e, {})
@@ -320,32 +320,38 @@ def routingkit(rows):
     CH (rebuild per metric, request cost); none when the size has no RoutingKit rows."""
     prep = [r for r in rows if r["kind"] == "routingkit_prepare"]
     ch = [r for r in rows if r["kind"] == "routingkit_ch_slot"]
-    if not prep or len(ch) != PASSES * SLOT_COUNT or any(r["wrong"] for r in ch):
+    expected = [(p, s) for p in range(PASSES) for s in range(SLOT_COUNT)]
+    if len(prep) != 1 or sorted((r["pass"], r["slot"]) for r in ch) != expected or any(r["wrong"] for r in ch):
         raise ValueError("incomplete or wrong RoutingKit population")
     rate = lambda s: sum(r["query_s"] for r in s) / sum(r["queries"] for r in s) * 1e9 / 3600
     slots = [r for r in rows if r["kind"] == "routingkit_slot"]
     ups = [r for r in rows if r["kind"] == "routingkit_update"]
-    if len(slots) != PASSES * SLOT_COUNT or len(ups) != PASSES * 4 * len(F) or any(r["wrong"] for r in slots + ups):
+    if (sorted((r["pass"], r["slot"]) for r in slots) != expected
+            or len(ups) != PASSES * 4 * len(F) or any(r["wrong"] for r in slots + ups)):
         raise ValueError("incomplete or wrong RoutingKit population")
-    per_slot = lambda key: float(np.mean([np.median([r[key] for r in slots if r["slot"] == s])
-                                          for s in range(SLOT_COUNT)]))
+    per_slot = lambda key: float(np.mean([r[key] for r in slots]))
     p = prep[0]
     return [{"kind": "routingkit", "commit": p["commit"], "order_s": p["order_s"], "build_s": p["build_s"],
              "prepare_s": p["order_s"] + p["build_s"], "customize_s": per_slot("customize_s"),
              "customize4_wall_s": per_slot("customize4_wall_s"),
              "q": sum(r["query_s"] for r in slots) / sum(r["queries"] for r in slots) * 1e9 / 3600,
+             "q_pass": [rate([r for r in slots if r["pass"] == p]) for p in range(PASSES)],
+             "u_pass": [float(np.mean([r["customize_s"] for r in slots if r["pass"] == p])) for p in range(PASSES)],
              "queries": sum(r["queries"] for r in slots), "query_s": sum(r["query_s"] for r in slots),
              "checked": sum(r["checked"] for r in slots) + sum(r["checked"] for r in ch),
-             "ch_build_s": float(np.mean([np.median([r["build_s"] for r in ch if r["slot"] == s])
-                                          for s in range(SLOT_COUNT)])),
+             "ch_build_s": float(np.mean([r["build_s"] for r in ch])),
              "ch_q": rate(ch),
+             "ch_q_pass": [rate([r for r in ch if r["pass"] == p]) for p in range(PASSES)],
+             "ch_u_pass": [float(np.mean([r["build_s"] for r in ch if r["pass"] == p])) for p in range(PASSES)],
+             "process_peak_rss_bytes": p.get("process_peak_rss_bytes"),
+             "ch_process_peak_rss_bytes": ch[0].get("process_peak_rss_bytes"),
              "ratio_by_f": {str(f): float(np.mean([r["partial_s"] / r["full_s"] for r in ups if r["target_f"] == f]))
                             for f in F}}]
 
 
 def plan(selected="all", modes=None):
     """CI shards as {name, size, modes, passes, slots, queries}. A city or Gyeongbuk runs in one job;
-    the union splits its timing by pass, the nation by pass and half of the weekday slots, each
+    the union splits its timing by pass, the nation by pass and weekday slot, each
     with the partial study, RoutingKit and memory in separate jobs."""
     out = []
     for size in SIZES if selected == "all" else (selected,):
@@ -355,7 +361,7 @@ def plan(selected="all", modes=None):
             out.append({"name": size, "size": size, "modes": "time,partial,routingkit,routingkit-ch,memory", "passes": every,
                         "slots": slots, "queries": q})
             continue
-        halves = ("0,1,2,3", "4,5,6,7") if size == "korea" else (slots,)
+        halves = tuple(map(str, range(SLOT_COUNT))) if size == "korea" else (slots,)
         out += [{"name": f"{size}-time-{p}-{h[0]}", "size": size, "modes": "time", "passes": str(p), "slots": h,
                  "queries": q} for p in range(PASSES) for h in halves]
         out += [{"name": f"{size}-partial", "size": size, "modes": "partial,routingkit", "passes": every,
@@ -394,6 +400,16 @@ def summarize(files):
             "raw_sha256": {f.name: hashlib.sha256(raw).hexdigest() for f, raw in raws},
             "source": g["source"], "machine": g["machine"]}]
     eng = engines(rows)
+    rk = routingkit(rows)
+    for r in rk:
+        for name, prefix, u, preparation, peak in (
+                ("routingkit-cch", "", r["customize_s"], r["prepare_s"], r["process_peak_rss_bytes"]),
+                ("routingkit-ch", "ch_", r["ch_build_s"], 0.0, r["ch_process_peak_rss_bytes"])):
+            eng[name] = {"q": r[prefix + "q"], "u": u, "q_pass": r[prefix + "q_pass"],
+                         "u_pass": r[prefix + "u_pass"], "u_wall": u, "prepare_s": preparation,
+                         "memory_bytes": None, "process_peak_rss_bytes": peak,
+                         "checked": sum(x["checked"] for x in rows
+                                        if x["kind"] == ("routingkit_ch_slot" if prefix else "routingkit_slot"))}
     out += [{"kind": "engine", "size": size, "method": e, **v} for e, v in eng.items()]
     for r in traffic.REQUESTS:
         first, switches, k = kstar(eng, r)
@@ -410,7 +426,7 @@ def summarize(files):
                 "f_star_pass": [crossing(*curve(ups, p)) for p in range(PASSES)],
                 "dataset_f": [float(min(u["f"] for u in ups if u["sequence"] != "synthetic" and u["changed"])),
                               float(max(u["f"] for u in ups if u["sequence"] != "synthetic" and u["changed"]))]})
-    out += [{**r, "size": size} for r in routingkit(rows)]
+    out += [{**r, "size": size} for r in rk]
     return out
 
 
@@ -452,7 +468,13 @@ def report(directory, results):
         by.setdefault(size, []).append(f)
     if not set(by) <= set(SIZES) or not by:
         raise ValueError(f"unexpected sizes {sorted(by)}")
-    rows = [r for s in SIZES if s in by for r in summarize(by[s])]
+    rows = []
+    for size in SIZES:
+        if size in by:
+            try:
+                rows.extend(summarize(by[size]))
+            except ValueError as error:
+                raise ValueError(f"{size}: {error}") from error
     rows += growth(rows)
     (results / "scale.jsonl").write_text(
         "".join(json.dumps(r, sort_keys=True, allow_nan=False) + "\n" for r in rows), encoding="utf-8", newline="\n")

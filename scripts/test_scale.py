@@ -78,6 +78,22 @@ class Breakeven(unittest.TestCase):
 
 
 class Validation(unittest.TestCase):
+    def test_routingkit_rejects_a_duplicate_in_place_of_a_missing_slot(self):
+        rows = [{"kind": "routingkit_prepare", "commit": "pinned", "order_s": 1.0, "build_s": 2.0}]
+        for p in range(scale.PASSES):
+            for s in range(scale.SLOT_COUNT):
+                common = {"pass": p, "slot": s, "wrong": 0, "queries": 8, "checked": 8, "query_s": 0.001}
+                rows.append({"kind": "routingkit_ch_slot", "build_s": 1.0, **common})
+                rows.append({"kind": "routingkit_slot", "customize_s": 0.01, "customize4_wall_s": 0.005, **common})
+        rows += [{"kind": "routingkit_update", "target_f": f, "partial_s": f, "full_s": 1.0, "wrong": 0}
+                 for _ in range(scale.PASSES * 4) for f in scale.F]
+        self.assertEqual(len(scale.routingkit(rows)), 1)
+        for kind in ("routingkit_ch_slot", "routingkit_slot"):
+            broken = [dict(r) for r in rows]
+            next(r for r in broken if r["kind"] == kind)["slot"] = 1
+            with self.assertRaises(ValueError):
+                scale.routingkit(broken)
+
     def test_complete_rows_pass_and_a_missing_slot_fails(self):
         self.assertEqual(scale.validate(raw()), (8, 1))
         with self.assertRaises(ValueError):

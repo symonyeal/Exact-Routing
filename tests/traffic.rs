@@ -193,6 +193,7 @@ fn multilevel_overlays_answer_every_metric_exactly() {
     for us in [vec![16, 64], vec![8, 40, 160]] {
         let p = nest(&gs[0], &xy, &us);
         let mut q = Query::new(n);
+        let mut path = Vec::new();
         for g in &gs {
             let m = route::levels::customize(g, &p);
             for _ in 0..8 {
@@ -200,6 +201,23 @@ fn multilevel_overlays_answer_every_metric_exactly() {
                 let d = dijkstra(g, s).d;
                 for (t, &d) in d.iter().enumerate() {
                     assert_eq!(q.run(g, &p, &m, s, t), d, "{us:?} {s}->{t}");
+                    assert_eq!(q.path(g, &p, &m, s, t, &mut path), d);
+                    if !d.is_finite() {
+                        assert!(path.is_empty());
+                        continue;
+                    }
+                    assert_eq!(path.first(), Some(&(s as u32)));
+                    assert_eq!(path.last(), Some(&(t as u32)));
+                    let cost: f64 = path
+                        .windows(2)
+                        .map(|a| {
+                            g.arcs(a[0] as usize)
+                                .filter(|&(v, _)| v == a[1])
+                                .map(|(_, w)| w)
+                                .fold(f64::INFINITY, f64::min)
+                        })
+                        .sum();
+                    assert_eq!(cost, d, "{us:?} path {s}->{t}");
                 }
             }
         }

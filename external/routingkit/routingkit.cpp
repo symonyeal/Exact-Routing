@@ -26,11 +26,37 @@
 #include <fstream>
 #include <iterator>
 #include <vector>
+#include <algorithm>
 
 using namespace RoutingKit;
 
 static double now() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// The same SplitMix64 schedule as scale.rs: every request is timed once per pass.
+template<class T> static void shuffle(std::vector<T>& x, uint64_t& z) {
+    for (size_t i = x.size(); i > 1; --i) {
+        uint64_t a = (z += 0x9e3779b97f4a7c15ULL);
+        a = (a ^ (a >> 30)) * 0xbf58476d1ce4e5b9ULL;
+        a = (a ^ (a >> 27)) * 0x94d049bb133111ebULL;
+        std::swap(x[i - 1], x[(a ^ (a >> 31)) % i]);
+    }
+}
+
+static auto schedule(uint64_t q, int pass) {
+    uint64_t z = 20261125 + pass;
+    std::vector<int> slots{0,1,2,3,4,5,6,7};
+    shuffle(slots, z);
+    std::vector<std::pair<int, std::vector<uint64_t>>> out;
+    for (int slot : slots) {
+        std::vector<uint64_t> mine;
+        for (uint64_t i = 0; i < q; ++i)
+            if ((i + pass) % 8 == static_cast<unsigned>(slot)) mine.push_back(i);
+        shuffle(mine, z);
+        out.emplace_back(slot, std::move(mine));
+    }
+    return out;
 }
 
 struct Reader {
@@ -78,27 +104,29 @@ int main(int argc, char** argv) {
     if (!std::strcmp(argv[2], "ch")) {
         uint64_t nodes = 0;
         for (int pass = 0; pass < 3; ++pass) {
-            for (int j = 0; j < 8; ++j) {
+            for (const auto& [j, mine] : schedule(q, pass)) {
                 double t = now();
                 const auto ch = ContractionHierarchy::build(n, tail, head, metric[j]);
                 const double build = now() - t;
                 ContractionHierarchyQuery query(ch);
                 t = now();
                 uint64_t wrong = 0;
-                for (uint64_t i = 0; i < q; ++i) {
+                auto distance = [&](uint64_t i) {
                     query.reset().add_source(pairs[2 * i]).add_target(pairs[2 * i + 1]).run();
                     unsigned d = query.get_distance();
                     if (d != inf_weight) nodes += query.get_node_path().size();
-                    wrong += (d == inf_weight ? UINT32_MAX : d) != ref[j][i];
-                }
+                    return d == inf_weight ? UINT32_MAX : d;
+                };
+                for (auto i : mine) wrong += distance(i) != ref[j][i];
                 const double query_s = now() - t;
+                for (uint64_t i = 0; i < q; ++i) wrong += distance(i) != ref[j][i];
                 if (wrong) {
                     std::fprintf(stderr, "RoutingKit CH: %llu wrong on slot %d\n", (unsigned long long)wrong, j);
                     return 1;
                 }
                 std::printf("{\"kind\":\"routingkit_ch_slot\",\"commit\":\"%s\",\"pass\":%d,\"slot\":%d,"
                             "\"build_s\":%.9g,\"queries\":%llu,\"query_s\":%.9g,\"checked\":%llu,\"wrong\":0}\n",
-                            ROUTINGKIT_COMMIT, pass, j, build, (unsigned long long)q, query_s, (unsigned long long)q);
+                            ROUTINGKIT_COMMIT, pass, j, build, (unsigned long long)mine.size(), query_s, (unsigned long long)q);
                 std::fflush(stdout);
             }
         }
@@ -130,7 +158,7 @@ int main(int argc, char** argv) {
         return d == inf_weight ? UINT32_MAX : d;
     };
     for (int pass = 0; pass < 3; ++pass) {
-        for (int j = 0; j < 8; ++j) {
+        for (const auto& [j, mine] : schedule(q, pass)) {
             w = metric[j];
             t = now();
             cm.customize();
@@ -140,15 +168,16 @@ int main(int argc, char** argv) {
             const double four = now() - t;
             t = now();
             uint64_t wrong = 0;
-            for (uint64_t i = 0; i < q; ++i) wrong += distance(i) != ref[j][i];
+            for (auto i : mine) wrong += distance(i) != ref[j][i];
             const double query_s = now() - t;
+            for (uint64_t i = 0; i < q; ++i) wrong += distance(i) != ref[j][i];
             if (wrong) {
                 std::fprintf(stderr, "RoutingKit: %llu wrong on slot %d\n", (unsigned long long)wrong, j);
                 return 1;
             }
             std::printf("{\"kind\":\"routingkit_slot\",\"pass\":%d,\"slot\":%d,\"customize_s\":%.9g,"
                         "\"customize4_wall_s\":%.9g,\"queries\":%llu,\"query_s\":%.9g,\"checked\":%llu,"
-                        "\"wrong\":0}\n", pass, j, one, four, (unsigned long long)q, query_s,
+                        "\"wrong\":0}\n", pass, j, one, four, (unsigned long long)mine.size(), query_s,
                         (unsigned long long)q);
         }
         for (const auto& u : ups) {

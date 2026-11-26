@@ -1,0 +1,88 @@
+name: Recover routing results
+
+on:
+  workflow_dispatch:
+    inputs:
+      previous_run:
+        description: Original scale run
+        default: '45706748560'
+        required: true
+      supplemental_run:
+        description: Additional scale run
+        default: '45722865636'
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install numpy pandas pyarrow
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.previous_run }}
+          pattern: scale-*
+          path: results/scale
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.supplemental_run }}
+          pattern: scale-*
+          path: results/scale
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '45690498142'
+          name: traffic-summary
+          path: results/traffic-recovered
+      - name: Expose complete sizes and missing populations
+        run: |
+          python - <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, 'scripts')
+          import scale
+          files = list(Path('results/scale').glob('*.jsonl'))
+          by = {}
+          for path in files:
+              size = json.loads(path.read_text().splitlines()[0])['size']
+              by.setdefault(size, []).append(path)
+          for size in scale.SIZES:
+              try:
+                  rows = scale.summarize(by.get(size, []))
+              except (ValueError, StopIteration, IndexError) as error:
+                  print(json.dumps({'kind': 'unavailable', 'size': size, 'error': str(error)}))
+              else:
+                  for row in rows:
+                      print(json.dumps(row, sort_keys=True, allow_nan=False))
+          for path in Path('results/traffic-recovered').glob('*.jsonl'):
+              print(path.read_text())
+          PY
+      - name: Require the full comparison before producing its report
+        run: python scripts/scale.py report results/scale
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: recovered-routing-results
+          path: |
+            results/scale/
+            results/scale.jsonl
+            results/scale.md
+            results/traffic-recovered/
+          if-no-files-found: error
+          retention-days: 30

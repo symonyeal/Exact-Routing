@@ -163,6 +163,9 @@ pub fn customize(g: &Graph, p: &Nest) -> Multi {
 /// Reusable Dijkstra state for multilevel queries; only touched entries are reset.
 pub struct Query {
     d: Vec<f64>,
+    // Parent node, level (usize::MAX for a base arc), arc index.
+    pi: Vec<(u32, usize, usize)>,
+    search: Search,
     done: Vec<bool>,
     touched: Vec<u32>,
     heap: BinaryHeap<Reverse<(Key, u32)>>,
@@ -172,6 +175,8 @@ impl Query {
     pub fn new(n: usize) -> Query {
         Query {
             d: vec![f64::INFINITY; n],
+            pi: vec![(0, usize::MAX, 0); n],
+            search: Search::new(n),
             done: vec![false; n],
             touched: Vec::new(),
             heap: BinaryHeap::new(),
@@ -200,7 +205,7 @@ impl Query {
             }
             let base = (g.off[x]..g.off[x + 1])
                 .filter(|&a| p.lv[0].cell[a] != NONE && near(0, p.lv[0].cell[a]))
-                .map(|a| (g.head[a], g.w[a]));
+                .map(|a| (g.head[a], g.w[a], usize::MAX, a));
             let over = (0..l)
                 .take_while(|&k| p.lv[k].home[x] == NONE)
                 .flat_map(|k| {
@@ -209,19 +214,79 @@ impl Query {
                         .filter(move |&a| {
                             !near(k, v.own[a]) && (k + 1 == l || near(k + 1, v.group[a]))
                         })
-                        .map(move |a| (v.g.head[a], v.g.w[a]))
+                        .map(move |a| (v.g.head[a], v.g.w[a], k, a))
                 });
-            for (y, w) in base.chain(over) {
+            for (y, w, k, a) in base.chain(over) {
                 let y = y as usize;
                 if dx + w < self.d[y] {
                     if self.d[y] == f64::INFINITY {
                         self.touched.push(y as u32);
                     }
                     self.d[y] = dx + w;
+                    self.pi[y] = (x as u32, k, a);
                     self.heap.push(Reverse((Key(dx + w), y as u32)));
                 }
             }
         }
         f64::INFINITY
+    }
+
+    /// Exact distance and base-node path. Shortcuts are unpacked by searches restricted to their
+    /// cells, descending one overlay level at a time; this recovery is part of the request cost.
+    pub fn path(
+        &mut self,
+        g: &Graph,
+        p: &Nest,
+        m: &Multi,
+        s: usize,
+        t: usize,
+        out: &mut Vec<u32>,
+    ) -> f64 {
+        let d = self.run(g, p, m, s, t);
+        out.clear();
+        if !d.is_finite() {
+            return d;
+        }
+        let mut stack = Vec::new();
+        let mut x = t;
+        while x != s {
+            let (u, k, a) = self.pi[x];
+            stack.push((u as usize, k, a));
+            x = u as usize;
+        }
+        out.push(s as u32);
+        let mut nodes = Vec::new();
+        while let Some((u, k, a)) = stack.pop() {
+            if k == usize::MAX {
+                out.push(g.head[a]);
+                continue;
+            }
+            let lv = &m.lv[k];
+            let v = lv.g.head[a] as usize;
+            let cell = lv.own[a];
+            if cell == CUT {
+                out.push(v as u32);
+                continue;
+            }
+            let below = if k == 0 { g } else { &m.lv[k - 1].g };
+            let allowed = |b: usize| {
+                if k == 0 {
+                    p.lv[0].cell[b] == cell
+                } else {
+                    m.lv[k - 1].group[b] == cell
+                }
+            };
+            assert_eq!(self.search.run(below, u, Some(v), allowed), lv.g.w[a]);
+            self.search.path(u, v, &mut nodes);
+            for step in nodes.windows(2).rev() {
+                let u = step[0] as usize;
+                let b = (below.off[u]..below.off[u + 1])
+                    .filter(|&b| allowed(b) && below.head[b] == step[1])
+                    .min_by(|&a, &b| below.w[a].total_cmp(&below.w[b]))
+                    .unwrap();
+                stack.push((u, if k == 0 { usize::MAX } else { k - 1 }, b));
+            }
+        }
+        d
     }
 }
