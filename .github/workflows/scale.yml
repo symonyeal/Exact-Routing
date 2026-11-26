@@ -93,7 +93,7 @@ jobs:
           for mode in "${modes[@]}"; do
             python scripts/scale.py run "${{ matrix.size }}" "$mode" "results/scale/${{ matrix.name }}-$mode.jsonl" \
               --queries "${{ matrix.queries }}" --passes "${{ matrix.passes }}" --slots "${{ matrix.slots }}" \
-              --threads "$(nproc)"
+              --threads "$(nproc)" --engine "${{ matrix.engine }}"
           done
       - uses: actions/upload-artifact@v4
         with:

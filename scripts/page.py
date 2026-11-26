@@ -79,6 +79,7 @@ def scale_payload(path):
                       "queries": src["queries"], "reachable": src["reachable_time"],
                       "identity": src["identical_endpoints"], "trees": src["certified_trees"],
                       "raw_sha256": src["raw_sha256"], "machine": src["machine"], "source": src["source"],
+                      "machines": src.get("machines", {}),
                       "answer_kind": src["answer_kind"], "timing_contract": src["timing_contract"],
                       "engines": engines, "k": k, "k_pass": b["k_cch_pass"],
                       "static": first, "static_overlaps": ties, "switches": b["switches"],

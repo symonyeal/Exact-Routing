@@ -18,7 +18,7 @@ weekday p50 slots, then the eight weekend p50 slots, each in traffic.SLOTS order
 Legend (q, u, C, K as traffic.py)
   n     junctions (nodes) of a network
   a, b  exponents of q ∝ nᵃ and u ∝ nᵇ: least squares on log n
-  K*    updates per day above which a CCH engine is the cheapest, at R = 10^6 requests per day
+  K*    entry into CCH among BASE engines, in updates per day, at R = 10^6 requests per day
   f     changed-arc fraction of an update: arcs whose integer-millisecond weight changed / all arcs
   u(f)  core-seconds of a partial CCH update; u_full of a full one on the same update
   f*    the f at which u(f) = u_full, interpolated linearly in log f between measured updates
@@ -155,7 +155,7 @@ def run(size, mode, output, args):
         cmd = [exe("scale"), road, cols, "partial", args.queries, args.threads, rk]
     elif mode == "memory":
         rows = []
-        for e in ("none",) + ENGINES:
+        for e in (args.engine,) if args.engine else ("none",) + ENGINES:
             rows += stream([exe("scale"), road, cols, "memory", min(20, int(args.queries)), e], output, append=bool(rows))
         return finish(rows, size, meta, output)
     else:
@@ -218,8 +218,8 @@ def validate(rows):
     ups = [r for r in rows if r["kind"] == "update"]
     if len(ups) != PASSES * (2 * (SLOT_COUNT + 4) + 4 * len(F)) or not all(r["identical"] for r in ups):
         raise ValueError("incomplete partial-update population")
-    if {r["method"] for r in rows if r["kind"] == "memory"} != {"none", *ENGINES}:
-        raise ValueError("missing memory rows")
+    if sorted(r["method"] for r in rows if r["kind"] == "memory") != sorted(("none",) + ENGINES):
+        raise ValueError("missing or duplicated memory rows")
     if not PREPARED <= {r["method"] for r in rows if r["kind"] == "prepare"}:
         raise ValueError("missing preparation rows")
     return q, sum(r["mode"] == "time" for r in graphs)
@@ -227,7 +227,7 @@ def validate(rows):
 
 def engines(rows):
     """q, u and their per-pass values for each engine of one size, as traffic.engines; u_wall for
-    the threaded engine, preparation seconds (mean over shards) and peak memory over baseline.
+    the threaded engine, preparation seconds (mean over shards) and absolute process peak RSS.
     Engines of one SAME group answer with one query routine on bit-identical weights, so their q
     pools all their timed queries; q_own keeps each engine's own."""
     out = {}
@@ -246,8 +246,7 @@ def engines(rows):
         out[e] = {
             "q": rate(pool), "q_pass": q_pass, "q_own": rate(slot), "u": float(np.mean(u_slot)), "u_pass": u_pass, "u_wall": float(np.mean(wall)),
             "prepare_s": float(np.mean(prep)) if prep else 0.0, "prepare_runs": len(prep),
-            "memory_bytes": (m["peak_rss_bytes"] - m["baseline_rss_bytes"])
-            if m.get("peak_rss_bytes") is not None and m.get("baseline_rss_bytes") is not None else None,
+            "memory_bytes": m.get("peak_rss_bytes"),
             "checked": sum(r["checked"] for r in slot),
         }
     return out
@@ -255,7 +254,7 @@ def engines(rows):
 
 def kstar(eng, requests=10**6, p=None):
     """For R requests per day (pass p's values when given): the cheapest engine at K = 0 and the
-    switches of the envelope over every engine; and K*, the K above which CCH is the cheapest of the
+    switches of the envelope over every engine; and K*, the entry into CCH among the
     BASE engines (0 if it is at K = 0, None if never)."""
     first, switches = traffic.breakeven(eng, requests, p)
     head, base = traffic.breakeven({e: eng[e] for e in BASE}, requests, p)
@@ -376,9 +375,10 @@ def plan(selected="all", modes=None):
         out += [{"name": f"{size}-partial", "size": size, "modes": "partial,routingkit", "passes": every,
                  "slots": slots, "queries": q},
                 {"name": f"{size}-routingkit-ch", "size": size, "modes": "routingkit-ch", "passes": every,
-                 "slots": slots, "queries": q},
-                {"name": f"{size}-memory", "size": size, "modes": "memory", "passes": every, "slots": slots,
-                 "queries": q}]
+                 "slots": slots, "queries": q}]
+        out += [{"name": f"{size}-memory-{e}" if e else f"{size}-memory", "size": size, "modes": "memory",
+                 "passes": every, "slots": slots, "queries": q, "engine": e}
+                for e in (("none",) + ENGINES if size == "korea" else ("",))]
     if modes:
         wanted = set(modes.split(","))
         known = {"time", "partial", "routingkit", "routingkit-ch", "memory"}
@@ -409,6 +409,7 @@ def summarize(files):
             "certified_trees": sum(r["certified_trees"] for r in rows if r["kind"] == "graph"),
             "cch_edges": cch["edges"], "cch_triangles": cch["triangles"], "cch_tree_height": cch["tree_height"],
             "raw_sha256": {f.name: hashlib.sha256(raw).hexdigest() for f, raw in raws},
+            "machines": {f.name: json.loads(raw.splitlines()[0]).get("machine") for f, raw in raws},
             "source": g["source"], "machine": g["machine"]}]
     eng = engines(rows)
     rk = routingkit(rows)
@@ -472,7 +473,7 @@ def growth(rows):
 
 
 def report(directory, results):
-    files = sorted(directory.glob("*.jsonl"))
+    files = sorted(f for f in directory.rglob("*.jsonl") if f.name != "scale.jsonl")
     by = {}
     for f in files:
         size = json.loads(f.read_text(encoding="utf-8").splitlines()[0])["size"]
@@ -500,8 +501,9 @@ def markdown(rows):
              "CC BY-NC 4.0 (non-commercial). Integer-millisecond travel times; q in core-hours per 10⁹ requests, "
              "u in core-seconds per update, ranges over three passes.", "",
              "## Engines by size", "",
-             "Rust memory is incremental peak RSS above loaded input; native memory is the maximum child-process "
+             "Rust memory is whole-process peak RSS; native memory is the maximum child-process "
              "RSS (CH includes the exporter when input must be generated). These scopes differ. "
+             "Both include loaded input and checking state, rather than index storage alone. "
              "Every new-contract request returns a path; checked counts include repeated checks.", "",
              "| Size | Nodes | Engine | q (pass range) | u (pass range) | u wall | Prepare, s | Memory, MB | Checked |",
              "| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |"]
@@ -562,6 +564,7 @@ def main():
     r.add_argument("--passes", default="0,1,2")
     r.add_argument("--slots", default="0,1,2,3,4,5,6,7")
     r.add_argument("--threads", default="4")
+    r.add_argument("--engine", choices=("", "none") + ENGINES, default="", help="one engine for a memory shard")
     s = sub.add_parser("report")
     s.add_argument("directory", type=Path)
     s.add_argument("--results", type=Path, default=REPO / "results")

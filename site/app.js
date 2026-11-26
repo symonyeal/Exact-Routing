@@ -21,6 +21,8 @@ function table(caption, heads, rows, cls = "") {
 
 function costChart(id, size, key) {
   const rows = Object.entries(size.engines).sort((a, b) => a[1][key] - b[1][key]);
+  const winner = key === "q" ? rows[0] : rows.find(([, v]) => v.u > 0);
+  node(`${key}-title`).textContent = winner ? `${label(winner[0])} has the lowest mean ${key === "q" ? "request" : "index update"} cost in ${size.label}` : `${size.label}: no index update cost measured`;
   const w = Math.max(340, Math.min(560, node(id).clientWidth));
   const positive = rows.flatMap(([, v]) => [v[key], ...(v[`${key}_pass`] || [])]).filter((x) => x > 0);
   const lo = Math.floor(Math.log10(Math.min(...positive))), hi = Math.max(lo + 1, Math.ceil(Math.log10(Math.max(...positive))));
@@ -57,12 +59,14 @@ function partial(size) {
   for (const p of actual) body += `<circle cx="${X(p.f)}" cy="${Y(p.ratio)}" r="3" fill="none" stroke="var(--warn)"><title>${esc(`${p.sequence}: ${p.from} → ${p.to}; ${pct(p.f)} changed, ratio ${sig(p.ratio)}`)}</title></circle>`;
   svg("partial-chart", w, h, body, `${size.label}: partial/full update ratio; filled synthetic, open dataset transitions`);
   node("partial-title").textContent = size.f_star === null ? `${size.label}: partial/full crossing was not reached` : size.f_star === 0 ? `${size.label}: partial updates already cost more at the smallest tested fraction` : `${size.label}: partial customization crosses full cost at ${pct(size.f_star)} changed arcs`;
-  node("partial-table").innerHTML = table(`f* ${pct(size.f_star)}; pass range ${span(size.f_star_pass.filter((f) => f !== null), pct)}. Filled marks: synthetic; open marks: dataset.`, ["Sequence", "From → to", "Changed arcs", "Partial, s", "Full, s", "Ratio", "Pass ranges"], rows.map((u) => [esc(u.sequence), esc(`${u.from} → ${u.to}`), pct(u.f), sig(u.partial_s), sig(u.full_s), sig(u.ratio), u.distinguishable ? "separate" : "not distinguishable"]));
+  node("partial-table").innerHTML = "<details><summary>Partial update timings and transition populations</summary>" + table(`f* ${pct(size.f_star)}; pass range ${span(size.f_star_pass.filter((f) => f !== null), pct)}.`, ["Sequence", "From → to", "Changed arcs", "Partial, s", "Full, s", "Ratio", "Pass ranges"], rows.map((u) => [esc(u.sequence), esc(`${u.from} → ${u.to}`), pct(u.f), sig(u.partial_s), sig(u.full_s), sig(u.ratio), u.distinguishable ? "separate" : "not distinguishable"])) + "</details>";
 }
 
 function boundaries() {
   const nation = sizes.find((s) => s.id === "korea");
-  if (!nation) { pending("nation-chart", "Nationwide ranking not measured: the complete timing and memory population is unavailable."); return; }
+  if (!nation) { node("nation-title").textContent = "The nationwide cost ranking remains unmeasured"; pending("nation-chart", "Nationwide ranking not measured: the complete timing and memory population is unavailable."); return; }
+  const first = nation.switches[0];
+  node("nation-title").textContent = first ? `Nationwide, ${label(nation.static)} yields to ${label(first.to)} at ${sig(first.k)} updates per million requests` : `Nationwide, ${label(nation.static)} stays cheapest across update rates`;
   const w = Math.max(340, Math.min(900, node("nation-chart").clientWidth)), h = 350;
   const X = (r) => 60 + (Math.log10(r) - 3) / 6 * (w - 85);
   const Y = (k) => h - 45 - (Math.log10(k) + 2) / 8 * (h - 70);
@@ -81,7 +85,9 @@ function boundaries() {
 
 function growth() {
   const pts = sizes.filter((s) => s.k !== null && s.k > 0);
-  if (!pts.length) { pending("k-chart", "K* awaits the complete comparison measurements."); return; }
+  const measured = sizes.map((s) => s.k).filter((k) => k !== null && Number.isFinite(k));
+  node("k-title").textContent = measured.length ? `Rust CCH enters the base-engine envelope at ${span(measured)} updates per million requests` : "CCH's cost boundary remains unmeasured";
+  if (!pts.length) { pending("k-chart", "No positive finite K* is available for the logarithmic chart."); return; }
   const w = Math.max(340, Math.min(900, node("k-chart").clientWidth)), h = 280;
   const lo = Math.floor(Math.log10(Math.min(...pts.map((s) => s.nodes)))), hi = Math.max(lo + 1, Math.ceil(Math.log10(Math.max(...pts.map((s) => s.nodes)))));
   const kl = Math.floor(Math.log10(Math.min(...pts.flatMap((s) => [s.k, ...s.k_pass]).filter((k) => k > 0))));
@@ -91,13 +97,13 @@ function growth() {
   for (let t = lo; t <= hi; t++) body += line(X(10 ** t), 20, X(10 ** t), h - 45) + text(X(10 ** t), h - 25, n(10 ** t), "small", 'text-anchor="middle"');
   for (let t = kl; t <= kh; t++) body += line(55, Y(10 ** t), w - 30, Y(10 ** t)) + text(47, Y(10 ** t) + 4, sig(10 ** t), "small", 'text-anchor="end"');
   pts.forEach((s) => { const ks = s.k_pass.filter((k) => k !== null && k > 0); if (ks.length) body += line(X(s.nodes), Y(Math.min(...ks)), X(s.nodes), Y(Math.max(...ks)), "range"); body += dot(X(s.nodes), Y(s.k), `${s.label}: ${n(s.nodes)} nodes, K* ${sig(s.k)}`); });
-  body += text(w / 2, h - 3, "Network junctions", "small", 'text-anchor="middle"');
+  body += text(w / 2, h - 3, "Network nodes", "small", 'text-anchor="middle"');
   svg("k-chart", w, h, body, "K* against network size; whiskers show pass ranges");
-  node("k-table").innerHTML = table("Base-engine K* and all-engine static winner", ["Network", "Junctions", "K*", "Pass range", "Cheapest at K = 0"], sizes.map((s) => [esc(s.label), n(s.nodes), s.k === null ? "never" : sig(s.k), span(s.k_pass.filter((k) => k !== null)), esc(label(s.static))]));
+  node("k-table").innerHTML = table("Base-engine K* and all-engine static winner", ["Network", "Nodes", "K*", "Pass range", "Cheapest at K = 0"], sizes.map((s) => [esc(s.label), n(s.nodes), s.k === null ? "never" : sig(s.k), span(s.k_pass.filter((k) => k !== null)), esc(label(s.static))]));
 }
 
 function engineTables() {
-  node("engine-tables").innerHTML = sizes.map((s) => `<h3>${esc(s.label)} · ${n(s.nodes)} junctions</h3><p class="note">${n(s.queries)} requests; reachable counts by timing slot/shard: ${[...new Set(s.reachable)].map(n).join(", ")}; ${n(s.identity)} identical endpoints. ${s.static_overlaps.length ? `Static query costs not distinguishable from ${s.static_overlaps.map((e) => esc(label(e))).join(", ")}.` : ""}</p><div class="scroll">${table("Mean costs, with pass ranges in parentheses. All answers checked; no re-priced industry rows accepted.", ["Engine", "q · core-h / billion", "u · core-s / update", "Update wall, s", "Preparation, s", "Memory, MB", "Checked answers"], Object.entries(s.engines).map(([e, v]) => [esc(label(e)), `${sig(v.q)} (${span(v.q_pass)})`, `${sig(v.u)} (${span(v.u_pass)})`, sig(v.u_wall) + (v.four_threads_wall_s === undefined ? "" : `<br>${sig(v.four_threads_wall_s)} (four threads)`), sig(v.prepare_s), v.memory_bytes !== null ? `${sig(v.memory_bytes / 1e6)} incremental` : v.process_peak_rss_bytes === undefined ? "not measured" : `${sig(v.process_peak_rss_bytes / 1e6)} process peak`, v.checked === null ? "not measured" : n(v.checked)]), "engine-table")}</div>`).join("");
+  node("engine-tables").innerHTML = sizes.map((s) => `<details data-size="${esc(s.id)}"${s.id === node("size").value ? " open" : ""}><summary>${esc(s.label)} · ${n(s.nodes)} nodes</summary><p class="note">${n(s.queries)} requests; reachable counts by timing slot/shard: ${[...new Set(s.reachable)].map(n).join(", ")}; ${n(s.identity)} identical endpoints. ${s.static_overlaps.length ? `Static query costs not distinguishable from ${s.static_overlaps.map((e) => esc(label(e))).join(", ")}.` : ""}</p><div class="scroll">${table("Mean costs, with pass ranges in parentheses. All answers checked; no re-priced industry rows accepted.", ["Engine", "q · core-h / billion", "u · core-s / update", "Update wall, s", "Preparation, s", "Memory, MB", "Checked answers"], Object.entries(s.engines).map(([e, v]) => [esc(label(e)), `${sig(v.q)} (${span(v.q_pass)})`, `${sig(v.u)} (${span(v.u_pass)})`, sig(v.u_wall) + (v.four_threads_wall_s === undefined ? "" : `<br>${sig(v.four_threads_wall_s)} (four threads)`), sig(v.prepare_s), v.memory_bytes !== null ? `${sig(v.memory_bytes / 1e6)} process peak` : v.process_peak_rss_bytes === undefined ? "not measured" : `${sig(v.process_peak_rss_bytes / 1e6)} process peak`, v.checked === null ? "not measured" : n(v.checked)]), "engine-table")}</div></details>`).join("");
 }
 
 function exclusions() {
@@ -116,11 +122,11 @@ function render() {
   if (sizes.length) {
     const groups = [];
     sizes.forEach((s) => { const last = groups.at(-1); if (last?.engine === s.static) last.sizes.push(s); else groups.push({engine:s.static, sizes:[s]}); });
-    const endpoint = (s) => `${s.label} (${n(s.nodes)} junctions)`;
+    const endpoint = (s) => `${s.label} (${n(s.nodes)} nodes)`;
     node("answer").textContent = "With fixed traffic, " + groups.map((g) => `${label(g.engine)} is cheapest ${g.sizes.length === 1 ? `at ${endpoint(g.sizes[0])}` : `from ${endpoint(g.sizes[0])} through ${endpoint(g.sizes.at(-1))}`}`).join("; ") + ".";
     node("coverage").textContent = D.scale.missing.length ? `Complete comparisons retained for ${n(sizes.length)} networks. Still missing: ${D.scale.missing.join(", ")}.` : `Complete comparisons retained for ${n(sizes.length)} networks, from city to nation.`;
     node("size").disabled = false;
-    node("size").innerHTML = sizes.map((s) => `<option value="${esc(s.id)}">${esc(s.label)} · ${n(s.nodes)} junctions</option>`).join("");
+    node("size").innerHTML = sizes.map((s) => `<option value="${esc(s.id)}">${esc(s.label)} · ${n(s.nodes)} nodes</option>`).join("");
     renderSize(); engineTables();
   } else {
     node("coverage").textContent = "Request, update, preparation and memory comparisons are pending a complete run with shared path-returning workloads. Earlier distance-only timings are excluded from this ranking.";
@@ -132,6 +138,9 @@ function render() {
 }
 
 render();
-node("size").addEventListener("change", renderSize);
+node("size").addEventListener("change", () => {
+  renderSize();
+  for (const details of node("engine-tables").querySelectorAll("details")) details.open = details.dataset.size === node("size").value;
+});
 let frame;
 window.addEventListener("resize", () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => { renderSize(); boundaries(); growth(); }); });

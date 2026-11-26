@@ -78,6 +78,12 @@ class Breakeven(unittest.TestCase):
 
 
 class Validation(unittest.TestCase):
+    def test_memory_is_absolute_process_peak_even_when_baseline_pages_are_reused(self):
+        rows = raw()
+        next(r for r in rows if r["kind"] == "memory" and r["method"] == "dijkstra").update(
+            baseline_rss_bytes=4096, peak_rss_bytes=4096)
+        self.assertEqual(scale.engines(rows)["dijkstra"]["memory_bytes"], 4096)
+
     def test_update_cost_is_the_mean_over_passes(self):
         rows = raw()
         for row in rows:
@@ -93,6 +99,15 @@ class Validation(unittest.TestCase):
         rows = raw()
         rows.append({**rows[0], "timing_contract": "paths-reverse-update-v1"})
         with self.assertRaisesRegex(ValueError, "timing contracts"):
+            scale.validate(rows)
+
+    def test_nation_memory_shards_cover_every_engine_once(self):
+        shards = scale.plan("korea", "memory")
+        self.assertEqual(sorted(s["engine"] for s in shards), sorted(("none",) + scale.ENGINES))
+        self.assertTrue(all(s["modes"] == "memory" for s in shards))
+        rows = raw()
+        rows.append(next(r for r in rows if r["kind"] == "memory"))
+        with self.assertRaisesRegex(ValueError, "duplicated memory"):
             scale.validate(rows)
 
     def test_routingkit_rejects_a_duplicate_in_place_of_a_missing_slot(self):
@@ -186,7 +201,7 @@ class Committed(unittest.TestCase):
     def test_growth_exponents_recompute_from_engine_rows(self):
         src = [r for r in self.rows if r["kind"] == "source"]
         eng = {(r["size"], r["method"]): r for r in self.rows if r["kind"] == "engine"}
-        for g in (r for r in self.rows if r["kind"] == "growth" and r["method"] in scale.ENGINES):
+        for g in (r for r in self.rows if r["kind"] == "growth" and r["method"] != "K*"):
             for key, name in (("q", "a"), ("u", "b")):
                 if name in g:
                     a = scale.fit([s["nodes"] for s in src], [eng[s["size"], g["method"]][key] for s in src])[0]
