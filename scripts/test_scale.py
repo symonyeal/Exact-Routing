@@ -78,6 +78,23 @@ class Breakeven(unittest.TestCase):
 
 
 class Validation(unittest.TestCase):
+    def test_update_cost_is_the_mean_over_passes(self):
+        rows = raw()
+        for row in rows:
+            if row["kind"] == "slot":
+                row["update_s"] = row["update_wall_s"] = (1.0, 1.0, 7.0)[row["pass"]]
+        eng = scale.engines(rows)
+        for values in eng.values():
+            self.assertEqual(values["u_pass"], [1.0, 1.0, 7.0])
+            self.assertEqual(values["u"], 3.0)
+            self.assertEqual(values["u_wall"], 3.0)
+
+    def test_shards_cannot_mix_path_and_legacy_contracts(self):
+        rows = raw()
+        rows.append({**rows[0], "timing_contract": "paths-reverse-update-v1"})
+        with self.assertRaisesRegex(ValueError, "timing contracts"):
+            scale.validate(rows)
+
     def test_routingkit_rejects_a_duplicate_in_place_of_a_missing_slot(self):
         rows = [{"kind": "routingkit_prepare", "commit": "pinned", "order_s": 1.0, "build_s": 2.0}]
         for p in range(scale.PASSES):
@@ -88,6 +105,18 @@ class Validation(unittest.TestCase):
         rows += [{"kind": "routingkit_update", "target_f": f, "partial_s": f, "full_s": 1.0, "wrong": 0}
                  for _ in range(scale.PASSES * 4) for f in scale.F]
         self.assertEqual(len(scale.routingkit(rows)), 1)
+        rows.append({"kind": "graph", "mode": "time", "queries": 8,
+                     "timing_contract": "paths-reverse-update-v1"})
+        with self.assertRaisesRegex(ValueError, "timing contract"):
+            scale.routingkit(rows)
+        for row in rows:
+            if row["kind"] in ("routingkit_slot", "routingkit_ch_slot"):
+                row.update(timing_contract="paths-reverse-update-v1", queries=1)
+        self.assertEqual(len(scale.routingkit(rows)), 1)
+        rows[1]["queries"] = 8
+        with self.assertRaisesRegex(ValueError, "query population"):
+            scale.routingkit(rows)
+        rows[1]["queries"] = 1
         for kind in ("routingkit_ch_slot", "routingkit_slot"):
             broken = [dict(r) for r in rows]
             next(r for r in broken if r["kind"] == kind)["slot"] = 1

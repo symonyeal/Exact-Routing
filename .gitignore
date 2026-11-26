@@ -1,7 +1,5 @@
 data/
 target/
 __pycache__/
-results/metro/
+results/scale/
 external/routingkit/routingkit
-external/osrm/build/
-external/osrm/source/

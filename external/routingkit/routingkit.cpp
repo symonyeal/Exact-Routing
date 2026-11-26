@@ -27,6 +27,7 @@
 #include <iterator>
 #include <vector>
 #include <algorithm>
+#include <utility>
 
 using namespace RoutingKit;
 
@@ -125,7 +126,8 @@ int main(int argc, char** argv) {
                     return 1;
                 }
                 std::printf("{\"kind\":\"routingkit_ch_slot\",\"commit\":\"%s\",\"pass\":%d,\"slot\":%d,"
-                            "\"build_s\":%.9g,\"queries\":%llu,\"query_s\":%.9g,\"checked\":%llu,\"wrong\":0}\n",
+                            "\"build_s\":%.9g,\"queries\":%llu,\"query_s\":%.9g,\"checked\":%llu,\"wrong\":0,"
+                            "\"timing_contract\":\"paths-reverse-update-v1\"}\n",
                             ROUTINGKIT_COMMIT, pass, j, build, (unsigned long long)mine.size(), query_s, (unsigned long long)q);
                 std::fflush(stdout);
             }
@@ -177,7 +179,7 @@ int main(int argc, char** argv) {
             }
             std::printf("{\"kind\":\"routingkit_slot\",\"pass\":%d,\"slot\":%d,\"customize_s\":%.9g,"
                         "\"customize4_wall_s\":%.9g,\"queries\":%llu,\"query_s\":%.9g,\"checked\":%llu,"
-                        "\"wrong\":0}\n", pass, j, one, four, (unsigned long long)mine.size(), query_s,
+                        "\"wrong\":0,\"timing_contract\":\"paths-reverse-update-v1\"}\n", pass, j, one, four, (unsigned long long)mine.size(), query_s,
                         (unsigned long long)q);
         }
         for (const auto& u : ups) {

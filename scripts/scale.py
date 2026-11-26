@@ -201,6 +201,8 @@ def validate(rows):
     if any(r.get("wrong") for r in rows):
         raise ValueError("wrong answer")
     graphs = [r for r in rows if r["kind"] == "graph"]
+    if len({r.get("timing_contract", "legacy") for r in graphs if r["mode"] == "time"}) != 1:
+        raise ValueError("shards mix different timing contracts")
     if len({r["nodes"] for r in graphs}) != 1 or len({r["queries"] for r in graphs if r["mode"] == "time"}) != 1:
         raise ValueError("shards disagree on the graph or workload")
     q = next(r["queries"] for r in graphs if r["mode"] == "time")
@@ -329,6 +331,13 @@ def routingkit(rows):
     if (sorted((r["pass"], r["slot"]) for r in slots) != expected
             or len(ups) != PASSES * 4 * len(F) or any(r["wrong"] for r in slots + ups)):
         raise ValueError("incomplete or wrong RoutingKit population")
+    graphs = [r for r in rows if r["kind"] == "graph" and r["mode"] == "time"]
+    if graphs and graphs[0].get("timing_contract") == "paths-reverse-update-v1":
+        q = graphs[0]["queries"]
+        for row in slots + ch:
+            mine = sum((i + row["pass"]) % SLOT_COUNT == row["slot"] for i in range(q))
+            if row.get("timing_contract") != graphs[0]["timing_contract"] or row["queries"] != mine:
+                raise ValueError("RoutingKit timing contract or query population differs from Rust")
     per_slot = lambda key: float(np.mean([r[key] for r in slots]))
     p = prep[0]
     return [{"kind": "routingkit", "commit": p["commit"], "order_s": p["order_s"], "build_s": p["build_s"],
@@ -392,6 +401,8 @@ def summarize(files):
     part = next(r for r in rows if r["kind"] == "graph" and r["mode"] == "partial")
     cch = next(r for r in rows if r["kind"] == "prepare" and r["method"] == "CCH")
     out = [{"kind": "source", "size": size, "label": LABELS.get(size, size.capitalize()), "nodes": g["nodes"],
+            "answer_kind": g.get("answer_kind", "mixed distance/path"),
+            "timing_contract": g.get("timing_contract", "legacy"),
             "arcs": g["arcs"], "queries": q, "time_shards": shards, "identical_endpoints": g["identical_endpoints"],
             "reachable_time": [x for r in rows if r["kind"] == "graph" and r["mode"] == "time" for x in r["reachable"]],
             "reachable_partial": part["reachable"],

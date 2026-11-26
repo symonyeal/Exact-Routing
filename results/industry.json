@@ -1,0 +1,67 @@
+{
+  "checked_on": "2026-11-26",
+  "policy": "Exclude an adapter after two failed focused attempts; do not substitute OSM speeds.",
+  "engines": [
+    {
+      "name": "OSRM",
+      "methods": ["osrm-ch", "osrm-mld"],
+      "status": "excluded",
+      "release": "v5.27.1",
+      "commit": "4f3ee609ec1af40eb1f445c6706cfa5beb04c990",
+      "licence": "BSD-2-Clause",
+      "licence_url": "https://github.com/Project-OSRM/osrm-backend/blob/4f3ee609ec1af40eb1f445c6706cfa5beb04c990/LICENSE.TXT",
+      "docker_digest": null,
+      "build": "native",
+      "attempts": [
+        {
+          "run": 45723327199,
+          "url": "https://github.com/symonyeal/Exact-Routing/actions/runs/45723327199",
+          "producer": "193bff9136611659deb45698097419e464e691ff",
+          "stage": "configure",
+          "failure": "CMake 4 rejected upstream compatibility below CMake 3.5. Graph conversion did not run."
+        },
+        {
+          "run": 45723904712,
+          "url": "https://github.com/symonyeal/Exact-Routing/actions/runs/45723904712",
+          "producer": "b49c975a75b4e222de40ab840f9bcd0d68b93c2d",
+          "stage": "native build",
+          "failure": "Native build step exited with code 2 on Ubuntu 22.04; conversion was skipped. Exact build error unavailable: run and job log endpoints return HTTP 403. No artifacts were uploaded."
+        }
+      ],
+      "accepted_measurements": 0,
+      "precision": "not measured",
+      "performance": "not measured"
+    },
+    {
+      "name": "GraphHopper",
+      "methods": ["graphhopper-ch"],
+      "status": "excluded",
+      "release": "11.0",
+      "commit": "69e50f6e2cfaf0a8e69752df9953ee5f1ac276a4",
+      "licence": "Apache-2.0",
+      "licence_url": "https://github.com/graphhopper/graphhopper/blob/69e50f6e2cfaf0a8e69752df9953ee5f1ac276a4/LICENSE.txt",
+      "docker_digest": null,
+      "build": "native",
+      "attempts": [
+        {
+          "run": 45723330794,
+          "url": "https://github.com/symonyeal/Exact-Routing/actions/runs/45723330794",
+          "producer": "193bff9136611659deb45698097419e464e691ff",
+          "stage": "Java build",
+          "failure": "Road.java:188 failed compilation: int cannot be converted to java.lang.Double. Graph conversion did not run."
+        },
+        {
+          "run": 45723908696,
+          "url": "https://github.com/symonyeal/Exact-Routing/actions/runs/45723908696",
+          "producer": "b49c975a75b4e222de40ab840f9bcd0d68b93c2d",
+          "stage": "endpoint mapping audit",
+          "failure": "Build succeeded; directed fixture import failed the adapter assertion Original node was split: 1, in Hopper.assign called by originalNodes. No accepted query row was produced."
+        }
+      ],
+      "accepted_measurements": 0,
+      "precision": "not measured",
+      "performance": "not measured"
+    }
+  ],
+  "limit": "These integration failures do not establish engine limitations. GraphHopper's assertion does not establish physical node splitting; its adapter's edge mapping may be wrong. Neither adapter produced an accepted timing or re-priced accuracy population."
+}

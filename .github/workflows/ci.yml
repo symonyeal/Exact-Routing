@@ -39,14 +39,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install numpy pandas pyarrow osmium
+      - run: pip install numpy pandas pyarrow
       - run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
       - run: node --check site/app.js
       - name: Rebuild the results page data from the retained evidence
         run: |
           python3 scripts/page.py
           git diff --exit-code -- site/data.js
-      - name: Reconcile and rebuild the retained eleven-city report
+      - name: Rebuild retained traffic and scale reports
         run: |
-          python3 scripts/metro.py report results/metro.jsonl --output results/metro.md
-          git diff --exit-code -- results/metro.md
+          python3 - <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, 'scripts')
+          import scale
+          import traffic
+          for name, module in (('traffic', traffic), ('scale', scale)):
+              source = Path(f'results/{name}.jsonl')
+              if source.exists():
+                  rows = [json.loads(line) for line in source.read_text().splitlines()]
+                  Path(f'results/{name}.md').write_text(module.markdown(rows), encoding='utf-8', newline='\n')
+          PY
+          git diff --exit-code -- results/traffic.md results/scale.md

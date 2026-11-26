@@ -85,11 +85,25 @@ enum Index {
 
 /// Query state shared by the engines.
 struct Work {
-    search: Search,
-    bi: BiSearch,
+    search: Option<Search>,
+    bi: Option<BiSearch>,
     ws: Option<route::cch::Workspace>,
-    multi: Query,
+    multi: Option<Query>,
     path: Vec<u32>,
+}
+
+impl Work {
+    fn new(n: usize, p: &Prep, need: impl Fn(usize) -> bool) -> Self {
+        Self {
+            search: need(0).then(|| Search::new(n)),
+            bi: need(1).then(|| BiSearch::new(n)),
+            ws: (4..8)
+                .any(&need)
+                .then(|| p.cch.as_ref().unwrap().workspace()),
+            multi: (8..10).any(need).then(|| Query::new(n)),
+            path: Vec::new(),
+        }
+    }
 }
 
 /// Prepare the engines e with need(e), printing one row per preparation.
@@ -208,11 +222,12 @@ fn answer(
 ) -> f64 {
     match x {
         Index::Plain if e == 0 => {
-            let d = w.search.run(g, s, Some(t), |_| true);
-            w.search.path(s, t, &mut w.path);
+            let search = w.search.as_mut().unwrap();
+            let d = search.run(g, s, Some(t), |_| true);
+            search.path(s, t, &mut w.path);
             d
         }
-        Index::Plain => w.bi.path(g, r, s, t, &mut w.path),
+        Index::Plain => w.bi.as_mut().unwrap().path(g, r, s, t, &mut w.path),
         Index::Ch(ch, calc) => ch.path(calc, s, t, Some(&mut w.path)),
         Index::Cch(m) => {
             let ws = w.ws.as_mut().unwrap();
@@ -228,9 +243,14 @@ fn answer(
                 .unwrap()
                 .query_perfect(q, m, ws, s, t, Some(&mut w.path))
         }
-        Index::Multi(m) => w
-            .multi
-            .path(g, p.nests[e - 8].as_ref().unwrap(), m, s, t, &mut w.path),
+        Index::Multi(m) => w.multi.as_mut().unwrap().path(
+            g,
+            p.nests[e - 8].as_ref().unwrap(),
+            m,
+            s,
+            t,
+            &mut w.path,
+        ),
     }
 }
 
@@ -391,18 +411,13 @@ fn time(
         g(0),
         &pairs,
         json!({"mode":"time", "passes":passes, "slots":slots, "threads":threads,
+        "answer_kind":"path", "timing_contract":"paths-reverse-update-v1",
         "order_seed":20261125, "certified_trees":q * slots.len(), "reference_s":reference_s,
         "reachable":reachable}),
     );
     let p = prepare(|_| true, g(0), xy);
     let n = g(0).n;
-    let mut w = Work {
-        search: Search::new(n),
-        bi: BiSearch::new(n),
-        ws: p.cch.as_ref().map(Cch::workspace),
-        multi: Query::new(n),
-        path: Vec::new(),
-    };
+    let mut w = Work::new(n, &p, |_| true);
     let cch = p.cch.as_ref().unwrap();
     for &pass in passes {
         let mut z = 20261125 + pass as u64;
@@ -714,13 +729,7 @@ fn memory(road: &[u8], cols: &[u8], xy: &[(f64, f64)], e: Option<usize>, q: usiz
         let mut carry = p.cch.as_ref().map(|c| c.customize(free, 1).0);
         let changed = differ(free, g);
         let n = g.n;
-        let mut w = Work {
-            search: Search::new(n),
-            bi: BiSearch::new(n),
-            ws: p.cch.as_ref().map(Cch::workspace),
-            multi: Query::new(n),
-            path: Vec::new(),
-        };
+        let mut w = Work::new(n, &p, |x| x == e);
         let mut x = update(e, &p, g, &mut carry, &changed).0;
         for (i, &(s, t)) in pairs.iter().enumerate() {
             assert_eq!(
