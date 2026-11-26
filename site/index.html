@@ -27,7 +27,7 @@
   <p class="note">One query thread; the four-thread CCH update is labelled separately. Whiskers show the range over passes. Overlapping ranges are not distinguishable. CCH, four-thread CCH and partial CCH share a pooled q because they use the same query routine on identical weights.</p>
 </section>
 <section>
-  <h2 id="nation-title">The nationwide winner depends on requests and updates</h2>
+  <h2 id="nation-title">The winner depends on requests and updates</h2>
   <p class="unit">Daily core-hours C = R q / 10⁹ + K u / 3,600. One-time preparation is separate.</p>
   <div id="nation-chart" class="chart"></div><div id="nation-boundaries"></div>
 </section>
@@ -35,7 +35,7 @@
   <h2 id="k-title">CCH's cost boundary awaits comparison measurements</h2>
   <p class="unit">K* · updates per day per million daily requests · logarithmic axes</p>
   <div id="k-chart" class="chart"></div><div id="k-table" class="scroll"></div>
-  <p class="note">K* is entry into CCH among the base engines: Dijkstra, bidirectional Dijkstra, both fast_paths CH variants, Rust CCH and both overlays. The nationwide envelope above includes every measured engine, including RoutingKit and CCH variants. CCH can leave the envelope again at very high update rates.</p>
+  <p class="note">K* is entry into CCH among the base engines: Dijkstra, bidirectional Dijkstra, both fast_paths CH variants, Rust CCH and both overlays. The all-engine envelope above includes every measured engine, including RoutingKit and CCH variants. CCH can leave the envelope again at very high update rates.</p>
 </section>
 <section>
   <h2 id="partial-title">Partial updates help only when few arc weights change</h2>

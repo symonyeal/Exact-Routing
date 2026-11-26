@@ -43,8 +43,8 @@ REPO = Path(__file__).resolve().parents[1]
 DATA = REPO / "data" / "scale"
 CITIES = ("sejong", "daejeon", "ulsan", "gwangju", "daegu", "busan", "incheon", "seoul")
 UNION = ("seoul", "incheon", "gyeonggi", "gangwon", "chungbuk")
-SIZES = CITIES + ("gyeongbuk", "union", "korea")
-LABELS = {"union": "Seoul, Incheon, Gyeonggi, Gangwon, Chungbuk", "korea": "Nationwide"}
+SIZES = CITIES + ("gyeongbuk", "union")
+LABELS = {"union": "Seoul, Incheon, Gyeonggi, Gangwon, Chungbuk"}
 COLUMNS = (("default_speed_kmh",) + tuple(f"weekday_{s}_p50" for s in traffic.SLOTS)
            + tuple(f"weekend_{s}_p50" for s in traffic.SLOTS))
 METRICS = ("free",) + tuple(f"weekday {s}" for s in traffic.SLOTS) + tuple(f"weekend {s}" for s in traffic.SLOTS)
@@ -66,7 +66,7 @@ def fetch(size):
     if size == "union":
         nodes, edges, source = union()
     else:
-        stem = "nationwide/korea" if size == "korea" else f"regions/{size}"
+        stem = f"regions/{size}"
         nodes, nodes_hash = roads.read_table(f"{stem}_road_graph_nodes.parquet", ["node_id", "lat", "lon"])
         edges, edges_hash = roads.read_table(f"{stem}_road_graph_edges.parquet", EDGE_COLUMNS)
         source = {"files": [{"url": roads.URL.format(f"{stem}_road_graph_{t}.parquet"), "sha256": h}
@@ -359,26 +359,22 @@ def routingkit(rows):
 
 def plan(selected="all", modes=None):
     """CI shards as {name, size, modes, passes, slots, queries}. A city or Gyeongbuk runs in one job;
-    the union splits its timing by pass, the nation by pass and weekday slot, each
-    with the partial study, RoutingKit and memory in separate jobs."""
+    the union splits its timing by pass, with the partial study, RoutingKit and memory in separate jobs."""
     out = []
     for size in SIZES if selected == "all" else (selected,):
-        q = "200" if size == "korea" else "1000"
-        every, slots = "0,1,2", "0,1,2,3,4,5,6,7"
+        q, every, slots = "1000", "0,1,2", "0,1,2,3,4,5,6,7"
         if size in CITIES + ("gyeongbuk",):
             out.append({"name": size, "size": size, "modes": "time,partial,routingkit,routingkit-ch,memory", "passes": every,
                         "slots": slots, "queries": q})
             continue
-        halves = tuple(map(str, range(SLOT_COUNT))) if size == "korea" else (slots,)
-        out += [{"name": f"{size}-time-{p}-{h[0]}", "size": size, "modes": "time", "passes": str(p), "slots": h,
-                 "queries": q} for p in range(PASSES) for h in halves]
+        out += [{"name": f"{size}-time-{p}-0", "size": size, "modes": "time", "passes": str(p), "slots": slots,
+                 "queries": q} for p in range(PASSES)]
         out += [{"name": f"{size}-partial", "size": size, "modes": "partial,routingkit", "passes": every,
                  "slots": slots, "queries": q},
                 {"name": f"{size}-routingkit-ch", "size": size, "modes": "routingkit-ch", "passes": every,
                  "slots": slots, "queries": q}]
-        out += [{"name": f"{size}-memory-{e}" if e else f"{size}-memory", "size": size, "modes": "memory",
-                 "passes": every, "slots": slots, "queries": q, "engine": e}
-                for e in (("none",) + ENGINES if size == "korea" else ("",))]
+        out.append({"name": f"{size}-memory", "size": size, "modes": "memory", "passes": every, "slots": slots,
+                    "queries": q, "engine": ""})
     if modes:
         wanted = set(modes.split(","))
         known = {"time", "partial", "routingkit", "routingkit-ch", "memory"}

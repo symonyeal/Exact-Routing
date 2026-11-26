@@ -63,10 +63,10 @@ function partial(size) {
 }
 
 function boundaries() {
-  const nation = sizes.find((s) => s.id === "korea");
-  if (!nation) { node("nation-title").textContent = "The nationwide cost ranking remains unmeasured"; pending("nation-chart", "Nationwide ranking not measured: the complete timing and memory population is unavailable."); return; }
+  const nation = sizes.at(-1);
+  if (!nation) { node("nation-title").textContent = "The cost ranking remains unmeasured"; pending("nation-chart", "Comparison measurements pending."); return; }
   const first = nation.switches[0];
-  node("nation-title").textContent = first ? `Nationwide, ${label(nation.static)} yields to ${label(first.to)} at ${sig(first.k)} updates per million requests` : `Nationwide, ${label(nation.static)} stays cheapest across update rates`;
+  node("nation-title").textContent = first ? `${nation.label}: ${label(nation.static)} yields to ${label(first.to)} at ${sig(first.k)} updates per million requests` : `${nation.label}: ${label(nation.static)} stays cheapest across update rates`;
   const w = Math.max(340, Math.min(900, node("nation-chart").clientWidth)), h = 350;
   const X = (r) => 60 + (Math.log10(r) - 3) / 6 * (w - 85);
   const Y = (k) => h - 45 - (Math.log10(k) + 2) / 8 * (h - 70);
@@ -78,7 +78,7 @@ function boundaries() {
     body += `<polyline points="${points.map((p) => `${X(p.r)},${Y(p.k)}`).join(" ")}" class="line"><title>${esc(`Switch to ${label(s.to)} at K/R = ${sig(s.k / 1e6)}`)}</title></polyline>`;
   });
   body += text(w / 2, h - 3, "R · requests per day", "small", 'text-anchor="middle"') + text(60, 13, "K · updates per day", "small");
-  svg("nation-chart", w, h, body, "Nationwide all-engine cost boundaries, logarithmic axes; regions listed below");
+  svg("nation-chart", w, h, body, `${nation.label}: all-engine cost boundaries, logarithmic axes; regions listed below`);
   const order = [{k:0, to:nation.static}, ...nation.switches];
   node("nation-boundaries").innerHTML = table("Cheapest engine at one million daily requests; multiply K by R / one million for other volumes.", ["Updates per day", "Engine"], order.map((s, i) => [`${sig(s.k)} to ${i + 1 < order.length ? sig(order[i + 1].k) : "∞"}`, esc(label(s.to))]));
 }
@@ -124,7 +124,7 @@ function render() {
     sizes.forEach((s) => { const last = groups.at(-1); if (last?.engine === s.static) last.sizes.push(s); else groups.push({engine:s.static, sizes:[s]}); });
     const endpoint = (s) => `${s.label} (${n(s.nodes)} nodes)`;
     node("answer").textContent = "With fixed traffic, " + groups.map((g) => `${label(g.engine)} is cheapest ${g.sizes.length === 1 ? `at ${endpoint(g.sizes[0])}` : `from ${endpoint(g.sizes[0])} through ${endpoint(g.sizes.at(-1))}`}`).join("; ") + ".";
-    node("coverage").textContent = D.scale.missing.length ? `Complete comparisons retained for ${n(sizes.length)} networks. Still missing: ${D.scale.missing.join(", ")}.` : `Complete comparisons retained for ${n(sizes.length)} networks, from city to nation.`;
+    node("coverage").textContent = D.scale.missing.length ? `Complete comparisons retained for ${n(sizes.length)} networks. Still missing: ${D.scale.missing.join(", ")}.` : `Complete comparisons for ${n(sizes.length)} networks, ${n(sizes[0].nodes)} to ${n(sizes.at(-1).nodes)} nodes. Nationwide engine costs were not measured.`;
     node("size").disabled = false;
     node("size").innerHTML = sizes.map((s) => `<option value="${esc(s.id)}">${esc(s.label)} · ${n(s.nodes)} nodes</option>`).join("");
     renderSize(); engineTables();

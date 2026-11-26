@@ -101,10 +101,7 @@ class Validation(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "timing contracts"):
             scale.validate(rows)
 
-    def test_nation_memory_shards_cover_every_engine_once(self):
-        shards = scale.plan("korea", "memory")
-        self.assertEqual(sorted(s["engine"] for s in shards), sorted(("none",) + scale.ENGINES))
-        self.assertTrue(all(s["modes"] == "memory" for s in shards))
+    def test_duplicated_memory_rows_are_rejected(self):
         rows = raw()
         rows.append(next(r for r in rows if r["kind"] == "memory"))
         with self.assertRaisesRegex(ValueError, "duplicated memory"):
@@ -162,7 +159,7 @@ class Validation(unittest.TestCase):
         self.assertEqual([x["size"] for x in shards], list(scale.SIZES))
         self.assertTrue(all(x["modes"] == "routingkit-ch" for x in shards))
         self.assertTrue(all(x["passes"] == "0,1,2" for x in shards))
-        self.assertEqual(shards[-1]["queries"], "200")
+        self.assertTrue(all(x["queries"] == "1000" for x in shards))
         with self.assertRaises(ValueError):
             scale.plan("all", "missing")
 

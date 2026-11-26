@@ -36,7 +36,7 @@ class PageTests(unittest.TestCase):
             payload = page.scale_payload(path)
         self.assertEqual(payload["sizes"], [])
         self.assertIn("sejong", payload["rejected"])
-        self.assertIn("korea", payload["missing"])
+        self.assertIn("union", payload["missing"])
 
     @unittest.skipUnless((page.ROOT / "results/scale.jsonl").exists(), "complete path benchmark not retained")
     def test_committed_boundaries_recompute_and_a_changed_number_fails(self):
